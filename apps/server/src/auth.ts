@@ -182,12 +182,12 @@ async function fetchGoogleKeys(): Promise<Map<string, CryptoKey>> {
 /**
  * Verifies a Google ID token JWT against Google's JWKS public keys and validates standard claims
  * (`iss`, `aud`, `exp`, `nbf`, `sub`, `email`, `email_verified`). Also normalizes a display name
- * and flags whether a fallback "Adventurer" name was used.
+ * and flags whether a fallback "Hero" name was used.
  */
 export async function verifyGoogleIdTokenWithJwks(
   idToken: string,
   expectedClientId: string
-): Promise<{ googleSub: string; email: string; name: string; isDefaultAdventurer: boolean }> {
+): Promise<{ googleSub: string; email: string; name: string; isDefaultHero: boolean }> {
   const parts = idToken.split(".");
   if (parts.length !== 3) {
     throw new Error("Malformed ID token");
@@ -240,14 +240,14 @@ export async function verifyGoogleIdTokenWithJwks(
 
   const emailPrefix = payload.email.split("@")[0]?.trim() || "";
   const explicitOrEmailName = (payload.name || emailPrefix).trim().slice(0, 20);
-  const isDefaultAdventurer = explicitOrEmailName.length === 0;
-  const cleanName = isDefaultAdventurer ? "Adventurer" : explicitOrEmailName;
+  const isDefaultHero = explicitOrEmailName.length === 0;
+  const cleanName = isDefaultHero ? "Hero" : explicitOrEmailName;
 
   return {
     googleSub: payload.sub,
     email: payload.email.toLowerCase(),
     name: cleanName,
-    isDefaultAdventurer
+    isDefaultHero
   };
 }
 

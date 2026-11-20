@@ -74,7 +74,7 @@ async function idToken(
 describe("Google ID token verification", () => {
   test("accepts a valid token and normalizes the result", async () => {
     const r = await verifyGoogleIdTokenWithJwks(await idToken(), CLIENT_ID);
-    expect(r).toEqual({ googleSub: "google-sub-123", email: "player@example.com", name: "Player One", isDefaultAdventurer: false });
+    expect(r).toEqual({ googleSub: "google-sub-123", email: "player@example.com", name: "Player One", isDefaultHero: false });
   });
 
   test("accepts the bare `accounts.google.com` issuer", async () => {

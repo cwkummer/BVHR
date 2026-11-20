@@ -2,17 +2,18 @@
  * Cloudflare Worker HTTP/WebSocket entry point built with Hono.
  * Responsibilities:
  *  - Health check (`/api/health`) and authenticated profile lookup (`/api/me`).
- *  - Google OAuth sign-in (`/api/auth/google`) with unique fallback Adventurer username assignment.
+ *  - Google OAuth sign-in (`/api/auth/google`) with unique username assignment (`Hero-xxxxxxxx` fallback).
  *  - Regional shard selection, resume lookup, and WebSocket ticket issuance (`/api/join`, `/api/ws-ticket`).
  *  - WebSocket upgrade routing (`/ws/:roomId`) with ticket verification and profile forwarding (`X-Player-Data`)
  *    to the target `GameRoom` Durable Object shard.
  */
 import { Hono, type Context } from "hono";
 import { drizzle } from "drizzle-orm/d1";
-import { eq, like } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { users, type UserProfile } from "./db/d1-schema";
 import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "shared/shard-config";
 import { toPlayerIdentity } from "./player-identity";
+import { d1UserStore, findOrCreateUser, type GoogleUser } from "./user-provisioning";
 import { requireGoogleClientId, requireJwtSecret } from "./config";
 import { canReconnectToShard, pickFirstOpenShard, type ShardStats } from "./shard-routing";
 import {
@@ -404,7 +405,7 @@ const app = baseApp
     }
     return c.json({ profile: toPublicProfile(profile) }, 200);
   })
-  // Verifies a Google ID token, provisions a new user row with a unique fallback name if needed,
+  // Verifies a Google ID token, provisions a new user row with a unique username if needed,
   // and returns a scoped session JWT along with the user's public profile.
   .post("/api/auth/google", async (c) => {
     const secret = requireJwtSecret(c.env);
@@ -421,7 +422,7 @@ const app = baseApp
       return c.json({ error: "Missing or invalid Google idToken" }, 400);
     }
 
-    let googleUser: { googleSub: string; email: string; name: string; isDefaultAdventurer: boolean };
+    let googleUser: GoogleUser;
     try {
       googleUser = await verifyGoogleIdTokenWithJwks(body.idToken, googleClientId);
     } catch (err) {
@@ -434,51 +435,9 @@ const app = baseApp
       return c.json({ error: "Invalid or expired Google credential" }, 401);
     }
 
-    const d1 = drizzle(c.env.DB);
-    let [profile] = await d1.select().from(users).where(eq(users.googleSub, googleUser.googleSub));
-
+    const profile = await findOrCreateUser(d1UserStore(drizzle(c.env.DB)), googleUser);
     if (!profile) {
-      let resolvedUsername = googleUser.name;
-      if (googleUser.isDefaultAdventurer) {
-        // Assign a unique numbered "Adventurer<N>" name within 20 chars when no explicit name/prefix exists.
-        const existing = await d1
-          .select({ username: users.username })
-          .from(users)
-          .where(like(users.username, "Adventurer%"));
-        const taken = new Set(existing.map((row) => row.username.toLowerCase()));
-        let suffix = 1;
-        while (suffix < 100_000) {
-          const suffixStr = String(suffix);
-          const prefix = googleUser.name.slice(0, Math.max(1, 20 - suffixStr.length));
-          const candidateName = `${prefix}${suffixStr}`;
-          if (!taken.has(candidateName.toLowerCase())) {
-            resolvedUsername = candidateName;
-            break;
-          }
-          suffix += 1;
-        }
-        if (suffix >= 100_000) {
-          resolvedUsername = `${googleUser.name.slice(0, 10)}${crypto.randomUUID().slice(0, 8)}`;
-        }
-      }
-
-      const candidate = {
-        id: crypto.randomUUID(),
-        googleSub: googleUser.googleSub,
-        email: googleUser.email,
-        username: resolvedUsername,
-        level: 1,
-        xp: 0,
-        gold: 50,
-        maxHp: 100,
-        attack: 15,
-        defense: 6
-      };
-      await d1.insert(users).values(candidate).onConflictDoNothing();
-      [profile] = await d1.select().from(users).where(eq(users.googleSub, googleUser.googleSub));
-      if (!profile) {
-        return c.json({ error: "Unable to create user profile" }, 500);
-      }
+      return c.json({ error: "Unable to create user profile" }, 500);
     }
 
     const token = await mintSessionToken(secret, profile.id, profile.username);
