@@ -52,10 +52,15 @@ export function BattleModal({ myId, connected, battle, clockOffsetMs, roster, co
 
   return (
     <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50">
-      <div className="bg-slate-900 border border-amber-400/50 rounded-xl p-6 w-full max-w-md text-white shadow-2xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="battle-title"
+        className="bg-slate-900 border border-amber-400/50 rounded-xl p-6 w-full max-w-md text-white shadow-2xl"
+      >
         {/* Encounter header with building/zone title and urgent countdown badge */}
         <div className="flex items-center justify-between gap-2 mb-4">
-          <h2 className="text-xl font-bold text-amber-400">
+          <h2 id="battle-title" className="text-xl font-bold text-amber-400">
             Encounter in {battle.zoneId.toUpperCase()}
           </h2>
           <span
@@ -91,7 +96,11 @@ export function BattleModal({ myId, connected, battle, clockOffsetMs, roster, co
         </div>
 
         {/* Chronological turn-by-turn combat log */}
-        <div className="bg-slate-950 rounded p-3 h-28 overflow-y-auto text-xs space-y-1 mb-4 font-mono text-slate-300">
+        <div
+          role="log"
+          aria-live="polite"
+          className="bg-slate-950 rounded p-3 h-28 overflow-y-auto text-xs space-y-1 mb-4 font-mono text-slate-300"
+        >
           {combatLog.map((line, i) => (
             <div key={i}>&gt; {line}</div>
           ))}
@@ -99,7 +108,7 @@ export function BattleModal({ myId, connected, battle, clockOffsetMs, roster, co
         </div>
 
         {/* Prompt indicating whether local player action is currently awaited */}
-        <div className="text-sm mb-3 text-center font-medium">
+        <div className="text-sm mb-3 text-center font-medium" aria-live="polite">
           {isMyTurn ? (
             <span className="text-sky-400">Your Turn ({secondsLeft}s) — Choose an action:</span>
           ) : (

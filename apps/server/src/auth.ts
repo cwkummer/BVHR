@@ -39,6 +39,8 @@ const JWKS_CACHE_TTL_MS = 3_600_000;
 const JWKS_MIN_TTL_MS = 300_000;
 const JWKS_MAX_TTL_MS = 21_600_000;
 const JWKS_MIN_REFRESH_INTERVAL_MS = 30_000;
+// After a failed refresh, keep serving the keys we have and do not retry for this long.
+const JWKS_RETRY_AFTER_FAILURE_MS = 30_000;
 const JWT_CLOCK_SKEW_SEC = 60;
 const WS_TICKET_TTL_SEC = 60;
 const SESSION_TTL_SEC = 60 * 60 * 24 * 7;
@@ -47,6 +49,25 @@ const SESSION_TTL_SEC = 60 * 60 * 24 * 7;
 let jwksCache: JwksCache | null = null;
 let inFlightJwks: Promise<Map<string, CryptoKey>> | null = null;
 let lastJwksFetchAt = 0;
+
+/**
+ * Thrown when Google's signing keys cannot be fetched and no previously fetched keys exist, so a token
+ * cannot be judged either way. Callers should answer 503 (our outage), not 401 (bad credential).
+ */
+export class GoogleKeysUnavailableError extends Error {
+  constructor(cause?: unknown) {
+    super("Google signing keys are unavailable");
+    this.name = "GoogleKeysUnavailableError";
+    this.cause = cause;
+  }
+}
+
+/** Clears the cached Google keys. Intended for tests. */
+export function resetGoogleKeyCache(): void {
+  jwksCache = null;
+  inFlightJwks = null;
+  lastJwksFetchAt = 0;
+}
 
 /**
  * Decodes a base64url-encoded string (JWT header, payload, or signature) into raw bytes.
@@ -85,6 +106,10 @@ export function parseCacheMaxAgeMs(cacheControl: string | null): number {
  * Retrieves Google's RSA signing keys indexed by `kid`, using cached keys when fresh and
  * deduplicating concurrent network refreshes. Respects `JWKS_MIN_REFRESH_INTERVAL_MS` when
  * `forceRefresh` is requested for an unknown `kid` (e.g., after key rotation).
+ *
+ * If a refresh fails, previously fetched keys are served (even past their expiry) and the next attempt
+ * is deferred, so a Google outage does not stop existing players from signing in. Only when there are
+ * no keys at all does it throw `GoogleKeysUnavailableError`.
  */
 async function getGoogleKeyMap(forceRefresh = false): Promise<Map<string, CryptoKey>> {
   const now = Date.now();
@@ -98,41 +123,59 @@ async function getGoogleKeyMap(forceRefresh = false): Promise<Map<string, Crypto
   }
 
   inFlightJwks = (async () => {
-    const res = await fetch(GOOGLE_JWKS_URL, { signal: AbortSignal.timeout(5_000) });
-    if (!res.ok) {
-      throw new Error(`Failed to fetch Google JWKS (${res.status})`);
+    try {
+      return await fetchGoogleKeys();
+    } catch (err) {
+      if (jwksCache) {
+        console.warn("Refreshing Google signing keys failed; serving cached keys:", err);
+        const failedAt = Date.now();
+        lastJwksFetchAt = failedAt;
+        jwksCache.expiresAt = failedAt + JWKS_RETRY_AFTER_FAILURE_MS;
+        return jwksCache.keys;
+      }
+      throw new GoogleKeysUnavailableError(err);
     }
-
-    const data = (await res.json()) as { keys?: GoogleJwk[] };
-    const rawKeys = Array.isArray(data.keys) ? data.keys : [];
-    const keyMap = new Map<string, CryptoKey>();
-
-    for (const jwk of rawKeys) {
-      if (!jwk.kid || jwk.kty !== "RSA") continue;
-      if (jwk.use && jwk.use !== "sig") continue;
-      const imported = await crypto.subtle.importKey(
-        "jwk",
-        jwk,
-        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-        false,
-        ["verify"]
-      );
-      keyMap.set(jwk.kid, imported);
-    }
-
-    const fetchedAt = Date.now();
-    const ttlMs = parseCacheMaxAgeMs(res.headers.get("Cache-Control"));
-    lastJwksFetchAt = fetchedAt;
-    jwksCache = {
-      keys: keyMap,
-      expiresAt: fetchedAt + ttlMs
-    };
-    return keyMap;
   })().finally(() => {
     inFlightJwks = null;
   });
 
   return inFlightJwks;
+}
+
+/**
+ * Downloads and imports Google's current signing keys and stores them in the cache.
+ */
+async function fetchGoogleKeys(): Promise<Map<string, CryptoKey>> {
+  const res = await fetch(GOOGLE_JWKS_URL, { signal: AbortSignal.timeout(5_000) });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch Google JWKS (${res.status})`);
+  }
+
+  const data = (await res.json()) as { keys?: GoogleJwk[] };
+  const rawKeys = Array.isArray(data.keys) ? data.keys : [];
+  const keyMap = new Map<string, CryptoKey>();
+
+  for (const jwk of rawKeys) {
+    if (!jwk.kid || jwk.kty !== "RSA") continue;
+    if (jwk.use && jwk.use !== "sig") continue;
+    const imported = await crypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    keyMap.set(jwk.kid, imported);
+  }
+
+  const fetchedAt = Date.now();
+  const ttlMs = parseCacheMaxAgeMs(res.headers.get("Cache-Control"));
+  lastJwksFetchAt = fetchedAt;
+  jwksCache = {
+    keys: keyMap,
+    expiresAt: fetchedAt + ttlMs
+  };
+  return keyMap;
 }
 
 /**

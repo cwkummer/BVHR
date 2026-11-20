@@ -11,6 +11,7 @@ import { useGameRoom } from "./hooks/useGameRoom";
 // Loaded on demand so the sign-in screen does not download PixiJS until a player is in a room.
 const GameCanvas = lazy(() => import("./components/GameCanvas").then((m) => ({ default: m.GameCanvas })));
 import { BattleModal } from "./components/BattleModal";
+import { BattleResultModal } from "./components/BattleResultModal";
 import {
   createApiClient,
   publicApiClient,
@@ -346,6 +347,8 @@ export default function App() {
     positionsRef,
     roster,
     battle,
+    battleResult,
+    dismissBattleResult,
     combatLog,
     notice,
     sendWASD,
@@ -357,6 +360,17 @@ export default function App() {
     auth?.token ? fetchWsTicket : null,
     handleShardUnavailable
   );
+
+  // The player id the canvas is drawn for. `selfId` is cleared whenever the socket drops, but the canvas
+  // must stay mounted across a reconnect (rebuilding the whole Pixi scene causes a blank flash), so keep
+  // the last known id until the user signs out.
+  const [canvasPlayerId, setCanvasPlayerId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selfId) setCanvasPlayerId(selfId);
+  }, [selfId]);
+  useEffect(() => {
+    if (!auth) setCanvasPlayerId(null);
+  }, [auth]);
 
   // Render error screen with retry and sign-out controls if auth or shard join fails.
   if (joinError) {
@@ -453,12 +467,12 @@ export default function App() {
       </div>
 
       {/* Interactive PixiJS 2D overworld canvas; movement input locks while disconnected, unsynced, or in combat */}
-      {selfId && (
+      {canvasPlayerId && (
         <Suspense fallback={<div className="w-full h-screen" />}>
           <GameCanvas
-            myId={selfId}
+            myId={canvasPlayerId}
             positionsRef={positionsRef}
-            movementLocked={!connected || !synced || Boolean(battle)}
+            movementLocked={!connected || !synced || Boolean(battle) || Boolean(battleResult)}
             sendWASD={sendWASD}
           />
         </Suspense>
@@ -474,6 +488,16 @@ export default function App() {
           roster={roster}
           combatLog={combatLog}
           onAction={sendBattleAction}
+        />
+      )}
+
+      {/* Outcome of the last battle (winner, final log line, reward), shown until dismissed */}
+      {!battle && battleResult && canvasPlayerId && (
+        <BattleResultModal
+          myId={canvasPlayerId}
+          result={battleResult}
+          roster={roster}
+          onClose={dismissBattleResult}
         />
       )}
     </main>

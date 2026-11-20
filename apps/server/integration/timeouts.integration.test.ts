@@ -68,6 +68,7 @@ describe("turn timeouts", () => {
     const ended = await a.waitFor("BATTLE_ENDED", undefined, 2 * TURN_TIMEOUT_MS + 15_000, mark);
     expect(ended.winnerId).toBe("gone1");
     expect(ended.log).toBe("Gone2 missed 2 turns while disconnected and fled!");
+    expect(ended.reward).toEqual({ xp: 50, gold: 25 });
     // One automatic attack first, then the forfeit.
     expect(a.all("TURN_RESOLVED", mark).some((m) => m.log.includes("Gone2 timed out"))).toBe(true);
 

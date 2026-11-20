@@ -9,7 +9,7 @@
  *    and mutable `positionsRef` read directly by `GameSceneController` each animation frame.
  */
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { ClientMessage, ServerMessage, PlayerSnapshot, BattleState, BattleAction } from "shared/protocol";
+import type { ClientMessage, ServerMessage, PlayerSnapshot, BattleState, BattleAction, BattleReward } from "shared/protocol";
 
 /**
  * Mutable client-side entity position record updated on `SYNC_STATE`, `SNAPSHOT`, and `PLAYER_JOINED`
@@ -32,6 +32,14 @@ const MAX_CONSECUTIVE_FAILURES_BEFORE_REMATCH = 3;
 const PING_INTERVAL_MS = 25_000;
 const PONG_TIMEOUT_MS = 10_000;
 
+/** How a battle ended, kept until the player dismisses the result screen. */
+export type BattleResult = {
+  winnerId: string;
+  participantIds: [string, string];
+  log: string;
+  reward: BattleReward | null;
+};
+
 export function useGameRoom(
   roomId: string | null,
   initialWsTicket: string | null,
@@ -53,6 +61,7 @@ export function useGameRoom(
   const [reconnectNonce, setReconnectNonce] = useState(0);
   const [roster, setRoster] = useState<Record<string, PlayerSnapshot>>({});
   const [battle, setBattle] = useState<BattleState | null>(null);
+  const [battleResult, setBattleResult] = useState<BattleResult | null>(null);
   const [combatLog, setCombatLog] = useState<string[]>([]);
   // Transient overworld notice (e.g. a battle could not start); cleared on battle start or after a delay.
   const [notice, setNotice] = useState<string | null>(null);
@@ -228,6 +237,7 @@ export function useGameRoom(
           case "BATTLE_STARTED":
             setClockOffsetMs(msg.serverNow - Date.now());
             setBattle(msg.battle);
+            setBattleResult(null);
             setCombatLog([`Battle started in ${msg.battle.zoneId}!`]);
             clearTimeout(noticeTimer);
             setNotice(null);
@@ -263,6 +273,12 @@ export function useGameRoom(
           case "BATTLE_ENDED":
             setBattle(null);
             setCombatLog((prev) => [...prev, msg.log]);
+            setBattleResult({
+              winnerId: msg.winnerId,
+              participantIds: msg.participantIds,
+              log: msg.log,
+              reward: msg.reward
+            });
             break;
         }
       };
@@ -311,11 +327,17 @@ export function useGameRoom(
       positionsRef.current.clear();
       setRoster({});
       setBattle(null);
+      setBattleResult(null);
       setCombatLog([]);
       setSynced(false);
       setSelfId(null);
     };
   }, [roomId, initialWsTicket, fetchWsTicket, reconnectNonce]);
+
+  /**
+   * Dismisses the battle result screen.
+   */
+  const dismissBattleResult = useCallback(() => setBattleResult(null), []);
 
   /**
    * Manually triggers a fresh connection attempt, clearing any superseded-tab banner.
@@ -360,6 +382,8 @@ export function useGameRoom(
     positionsRef,
     roster,
     battle,
+    battleResult,
+    dismissBattleResult,
     combatLog,
     notice,
     sendWASD,

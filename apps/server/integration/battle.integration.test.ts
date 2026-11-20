@@ -78,6 +78,7 @@ describe("combat and rewards", () => {
     const endB = await b.waitFor("BATTLE_ENDED", undefined, 20_000);
     expect(endA.winnerId).toBe(endB.winnerId);
     expect(endA.participantIds.sort()).toEqual(["alice3", "bob3"]);
+    expect(endA.reward).toEqual({ xp: 50, gold: 25 }); // the result tells players what the winner earned
     const winner = endA.winnerId;
     const loser = winner === "alice3" ? "bob3" : "alice3";
 
@@ -130,6 +131,7 @@ describe("combat and rewards", () => {
     const ended = await b.waitFor("BATTLE_ENDED", undefined, 5_000);
     expect(ended.winnerId).toBe("bob5");
     expect(ended.log).toBe("Alice5 fled the battle!");
+    expect(ended.reward).toEqual({ xp: 50, gold: 25 });
     await Bun.sleep(500);
     expect(claimsFor("bob5")).toEqual([{ xp: 50, gold: 25 }]);
   });

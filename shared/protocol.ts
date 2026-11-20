@@ -13,6 +13,9 @@ export type BattleAction = "ATTACK" | "HEAL" | "FLEE";
 export const BATTLE_STATUSES = ["ACTIVE"] as const;
 export type BattleStatus = (typeof BATTLE_STATUSES)[number];
 
+/** XP and gold granted to a battle winner. */
+export type BattleReward = { xp: number; gold: number };
+
 /**
  * Lightweight overworld presence and identity snapshot sent for players in a shard room.
  */
@@ -72,4 +75,11 @@ export type ServerMessage =
     }
   // A battle could not start because valid player data could not be read; the server retries automatically.
   | { type: "BATTLE_START_FAILED"; reason: "STATS_UNAVAILABLE"; retryInMs: number }
-  | { type: "BATTLE_ENDED"; winnerId: string; participantIds: [string, string]; log: string };
+  | {
+      type: "BATTLE_ENDED";
+      winnerId: string;
+      participantIds: [string, string];
+      log: string;
+      /** What the winner was paid, or null when the battle ended without a reward (e.g. an opponent vanished). */
+      reward: BattleReward | null;
+    };

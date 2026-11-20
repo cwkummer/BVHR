@@ -2,11 +2,13 @@
  * Google ID token verification and session/ticket JWT hardening. Tokens are signed with a locally
  * generated RSA key and Google's JWKS endpoint is faked, so every rejection path is exercised for real.
  */
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { sign } from "hono/jwt";
 import {
+  GoogleKeysUnavailableError,
   mintSessionToken,
   mintWsTicket,
+  resetGoogleKeyCache,
   verifyGoogleIdTokenWithJwks,
   verifySessionToken,
   verifyWsTicket
@@ -24,6 +26,7 @@ const b64url = (data: ArrayBuffer | Uint8Array | string) => {
 
 let privateKey: CryptoKey;
 let jwksFetches = 0;
+let jwksResponse: () => Response | Promise<Response>;
 
 beforeAll(async () => {
   const pair = (await crypto.subtle.generateKey(
@@ -33,9 +36,11 @@ beforeAll(async () => {
   )) as CryptoKeyPair;
   privateKey = pair.privateKey;
   const jwk = { ...(await crypto.subtle.exportKey("jwk", pair.publicKey)), kid: KID, use: "sig", alg: "RS256" };
+  jwksResponse = () =>
+    new Response(JSON.stringify({ keys: [jwk] }), { headers: { "Cache-Control": "public, max-age=3600" } });
   globalThis.fetch = (async () => {
     jwksFetches++;
-    return new Response(JSON.stringify({ keys: [jwk] }), { headers: { "Cache-Control": "public, max-age=3600" } });
+    return jwksResponse();
   }) as unknown as typeof fetch;
 });
 
@@ -123,6 +128,50 @@ describe("Google ID token verification", () => {
     await verifyGoogleIdTokenWithJwks(await idToken(), CLIENT_ID);
     await verifyGoogleIdTokenWithJwks(await idToken(), CLIENT_ID);
     expect(jwksFetches).toBe(before);
+  });
+});
+
+describe("Google key outage", () => {
+  const realNow = Date.now;
+  const healthy = () => jwksResponse;
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  test("with keys already cached, an outage does not stop sign-in, and Google is not hammered meanwhile", async () => {
+    const working = healthy();
+    resetGoogleKeyCache();
+    await verifyGoogleIdTokenWithJwks(await idToken(), CLIENT_ID); // warms the cache
+    // Two hours later the cached keys are stale, and Google is down.
+    Date.now = () => realNow() + 2 * 3600 * 1000;
+    jwksResponse = () => new Response("down", { status: 503 });
+    const before = jwksFetches;
+    await expect(verifyGoogleIdTokenWithJwks(await idToken({ exp: Math.floor(Date.now() / 1000) + 600 }), CLIENT_ID)).resolves.toBeDefined();
+    expect(jwksFetches).toBe(before + 1);
+    // The failed refresh is not retried on every request.
+    await verifyGoogleIdTokenWithJwks(await idToken({ exp: Math.floor(Date.now() / 1000) + 600 }), CLIENT_ID);
+    expect(jwksFetches).toBe(before + 1);
+    jwksResponse = working;
+  });
+
+  test("with no keys at all, an outage is reported as such (not as a bad credential), and recovery is automatic", async () => {
+    const working = healthy();
+    resetGoogleKeyCache();
+    jwksResponse = () => new Response("down", { status: 500 });
+    await expect(verifyGoogleIdTokenWithJwks(await idToken(), CLIENT_ID)).rejects.toBeInstanceOf(GoogleKeysUnavailableError);
+    jwksResponse = () => {
+      throw new Error("network unreachable");
+    };
+    await expect(verifyGoogleIdTokenWithJwks(await idToken(), CLIENT_ID)).rejects.toBeInstanceOf(GoogleKeysUnavailableError);
+    jwksResponse = working;
+    await expect(verifyGoogleIdTokenWithJwks(await idToken(), CLIENT_ID)).resolves.toBeDefined();
+  });
+
+  test("a genuinely bad token is still a plain rejection while keys are available", async () => {
+    resetGoogleKeyCache();
+    const err = await verifyGoogleIdTokenWithJwks(await idToken({ aud: "other" }), CLIENT_ID).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(GoogleKeysUnavailableError);
   });
 });
 

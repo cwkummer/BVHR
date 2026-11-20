@@ -13,8 +13,10 @@ import { eq, like } from "drizzle-orm";
 import { users, type UserProfile } from "./db/d1-schema";
 import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "shared/shard-config";
 import { toPlayerIdentity } from "./player-identity";
+import { requireGoogleClientId, requireJwtSecret } from "./config";
 import { canReconnectToShard, pickFirstOpenShard, type ShardStats } from "./shard-routing";
 import {
+  GoogleKeysUnavailableError,
   mintSessionToken,
   mintWsTicket,
   verifyGoogleIdTokenWithJwks,
@@ -56,26 +58,6 @@ const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
 const shardCountCache = new Map<string, ShardCountCacheEntry>();
 const inFlightShardStats = new Map<string, Promise<number>>();
 const inFlightPlayerStats = new Map<string, Promise<ShardStats>>();
-
-/**
- * Ensures `JWT_SECRET` is configured with a minimum length before signing or verifying tokens.
- */
-function requireJwtSecret(env: Env): string {
-  if (!env.JWT_SECRET || env.JWT_SECRET.trim().length < 8) {
-    throw new Error("JWT_SECRET is missing or too short");
-  }
-  return env.JWT_SECRET;
-}
-
-/**
- * Ensures `GOOGLE_CLIENT_ID` is configured before verifying Google ID token audiences.
- */
-function requireGoogleClientId(env: Env): string {
-  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_ID.trim()) {
-    throw new Error("GOOGLE_CLIENT_ID is missing");
-  }
-  return env.GOOGLE_CLIENT_ID.trim();
-}
 
 /**
  * Normalizes a Cloudflare request continent code to a supported region prefix, defaulting to `"na"`.
@@ -443,6 +425,11 @@ const app = baseApp
     try {
       googleUser = await verifyGoogleIdTokenWithJwks(body.idToken, googleClientId);
     } catch (err) {
+      // Google's signing keys being unreachable is our outage, not the user's bad credential.
+      if (err instanceof GoogleKeysUnavailableError) {
+        console.error("Google signing keys unavailable:", err);
+        return c.json({ error: "Sign-in is temporarily unavailable. Please try again shortly." }, 503);
+      }
       console.warn("Google ID token verification failed:", err);
       return c.json({ error: "Invalid or expired Google credential" }, 401);
     }

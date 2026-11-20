@@ -618,7 +618,8 @@ export class GameRoom extends DurableObject<Env> {
           type: "BATTLE_ENDED",
           winnerId: actor.id,
           participantIds,
-          log: "Opponent was unavailable; battle ended."
+          log: "Opponent was unavailable; battle ended.",
+          reward: null
         });
         this.pruneDisconnectedPlayers([actor.id, opponentId]);
       }
@@ -650,7 +651,8 @@ export class GameRoom extends DurableObject<Env> {
           type: "BATTLE_ENDED",
           winnerId: outcome.winnerId,
           participantIds,
-          log: outcome.log
+          log: outcome.log,
+          reward: { xp: reward.xp, gold: reward.gold }
         });
         this.pruneDisconnectedPlayers([actor.id, opponent.id]);
       }
@@ -790,7 +792,8 @@ export class GameRoom extends DurableObject<Env> {
       type: "BATTLE_ENDED",
       winnerId,
       participantIds: [battle.player1Id, battle.player2Id],
-      log: "Opponent disconnected unexpectedly; battle ended."
+      log: "Opponent disconnected unexpectedly; battle ended.",
+      reward: null
     });
   }
 }

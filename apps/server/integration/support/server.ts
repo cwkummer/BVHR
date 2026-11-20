@@ -12,7 +12,7 @@ import { join, resolve } from "node:path";
 import { mintSessionToken } from "../../src/auth";
 
 const SERVER_DIR = resolve(import.meta.dir, "../..");
-const SECRET = "integration-test-secret";
+const SECRET = "integration-test-secret-0123456789abcdef"; // must satisfy the 32-character minimum
 const DB_NAME = "rpg-global-db-dev";
 
 export type SeedUser = {
