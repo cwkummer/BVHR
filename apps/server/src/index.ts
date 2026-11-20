@@ -11,7 +11,7 @@ import { Hono } from "hono";
 import { drizzle } from "drizzle-orm/d1";
 import { eq, like } from "drizzle-orm";
 import { users, type UserProfile } from "./db/d1-schema";
-import { canReconnectToShard, type ShardStats } from "./shard-routing";
+import { canReconnectToShard, pickFirstOpenShard, type ShardStats } from "./shard-routing";
 import {
   mintSessionToken,
   mintWsTicket,
@@ -36,7 +36,6 @@ type ShardCountCacheEntry = {
 // Soft cap triggers shard rollover during matchmaking; hard cap is enforced inside GameRoom.
 const ROOM_SOFT_CAP = 40;
 const MAX_SHARDS_PER_REGION = 16;
-const SHARD_PROBE_BATCH_SIZE = 4;
 const SHARD_CACHE_TTL_MS = 3_000;
 // Mirrors the hard cap enforced inside GameRoom; used only if a shard omits `hardCap` in its stats.
 const DEFAULT_ROOM_HARD_CAP = 50;
@@ -195,12 +194,10 @@ async function fetchShardStatsWithPlayer(
 }
 
 /**
- * Selects the lowest-occupancy shard under `ROOM_SOFT_CAP` in `continent`:
- *  1. Checks warm cache entries first so already-known open shards avoid waking cold DOs.
- *  2. Probes uncached shards in small batches (`SHARD_PROBE_BATCH_SIZE`), stopping as soon as a
- *     batch yields at least one open shard below `ROOM_SOFT_CAP`.
+ * Selects the first shard in `continent` under `ROOM_SOFT_CAP` (fill-first, see `pickFirstOpenShard`),
+ * trusting fresh cache entries and probing stale shards one at a time.
  */
-async function selectLowestOccupancyRegionalShard(
+async function selectFirstOpenRegionalShard(
   env: Env,
   continent: string,
   now: number
@@ -210,64 +207,16 @@ async function selectLowestOccupancyRegionalShard(
     regionShardIds.push(`${continent}-overworld-${shard}`);
   }
 
-  // 1. Poll warm cache entries first before waking DOs.
-  let bestCachedOpen: { roomId: string; count: number } | null = null;
-  let allCachedFull = true;
-  const uncachedIds: string[] = [];
-
-  for (const roomId of regionShardIds) {
-    const cached = shardCountCache.get(roomId);
-    if (cached && now < cached.expiresAt) {
-      if (cached.count < ROOM_SOFT_CAP) {
-        allCachedFull = false;
-        if (!bestCachedOpen || cached.count < bestCachedOpen.count) {
-          bestCachedOpen = { roomId, count: cached.count };
-        }
-      }
-    } else {
-      uncachedIds.push(roomId);
-    }
-  }
-
-  if (bestCachedOpen) {
-    return bestCachedOpen;
-  }
-
-  // If every shard in the region is freshly cached at or above soft cap and none are uncached, return full.
-  if (allCachedFull && uncachedIds.length === 0) {
-    return null;
-  }
-
-  // 2. Probe remaining/uncached shards in small batches, stopping early once an open shard is found.
-  let bestLiveOpen: { roomId: string; count: number } | null = null;
-
-  for (let start = 0; start < uncachedIds.length; start += SHARD_PROBE_BATCH_SIZE) {
-    const batchIds = uncachedIds.slice(start, start + SHARD_PROBE_BATCH_SIZE);
-    const settled = await Promise.allSettled(
-      batchIds.map(async (roomId) => ({
-        roomId,
-        count: await getShardCount(env, roomId, continent, now)
-      }))
-    );
-
-    for (let i = 0; i < settled.length; i++) {
-      const result = settled[i];
-      if (result.status !== "fulfilled") {
-        console.warn(`Skipping unhealthy shard ${batchIds[i]}:`, result.reason);
-        continue;
-      }
-      const candidate = result.value;
-      if (candidate.count < ROOM_SOFT_CAP && (!bestLiveOpen || candidate.count < bestLiveOpen.count)) {
-        bestLiveOpen = candidate;
-      }
-    }
-
-    if (bestLiveOpen) {
-      return bestLiveOpen;
-    }
-  }
-
-  return null;
+  return pickFirstOpenShard(
+    regionShardIds,
+    ROOM_SOFT_CAP,
+    (roomId) => {
+      const cached = shardCountCache.get(roomId);
+      return cached && now < cached.expiresAt ? cached.count : undefined;
+    },
+    (roomId) => getShardCount(env, roomId, continent, now),
+    (roomId, err) => console.warn(`Skipping unhealthy shard ${roomId}:`, err)
+  );
 }
 
 type ShardTicketSuccess = {
@@ -283,7 +232,7 @@ type ShardTicketResult =
 
 /**
  * Resolves a player's target regional shard—honoring `preferredRoomId` when the player is already
- * present in that shard (e.g., reconnecting or resuming a battle), otherwise choosing the lowest-occupancy
+ * present in that shard (e.g., reconnecting or resuming a battle), otherwise choosing the first open
  * shard—and mints a room-bound WebSocket ticket.
  */
 async function issueShardSessionTicket(
@@ -322,25 +271,25 @@ async function issueShardSessionTicket(
     }
   }
 
-  const lowestShard = await selectLowestOccupancyRegionalShard(env, continent, now);
-  if (!lowestShard) {
+  const openShard = await selectFirstOpenRegionalShard(env, continent, now);
+  if (!openShard) {
     return { status: 503, body: { error: "All regional shards are currently full" } };
   }
 
-  // Optimistically increment cached occupancy (clamped to ROOM_SOFT_CAP) to spread bursty joins.
-  const current = shardCountCache.get(lowestShard.roomId);
-  const baseCount = current ? current.count : lowestShard.count;
+  // Optimistically increment cached occupancy (clamped to ROOM_SOFT_CAP) so a burst of joins cannot overfill one shard.
+  const current = shardCountCache.get(openShard.roomId);
+  const baseCount = current ? current.count : openShard.count;
   const nextCount = Math.min(ROOM_SOFT_CAP, Math.max(0, baseCount) + 1);
-  shardCountCache.set(lowestShard.roomId, {
+  shardCountCache.set(openShard.roomId, {
     count: nextCount,
     expiresAt: current ? current.expiresAt : now + SHARD_CACHE_TTL_MS
   });
 
-  const wsTicket = await mintWsTicket(secret, userId, lowestShard.roomId, now);
+  const wsTicket = await mintWsTicket(secret, userId, openShard.roomId, now);
   return {
     status: 200,
     body: {
-      roomId: lowestShard.roomId,
+      roomId: openShard.roomId,
       wsTicket,
       count: nextCount,
       cap: ROOM_SOFT_CAP
@@ -544,7 +493,7 @@ const app = baseApp
       const body = await c.req.json<{ roomId?: unknown }>();
       requestedRoomId = body.roomId;
     } catch {
-      // Optional body; falls back to lowest-occupancy regional shard selection.
+      // Optional body; falls back to fill-first regional shard selection.
     }
 
     const continent = resolveContinent(c.req.raw.cf?.continent);

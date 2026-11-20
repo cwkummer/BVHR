@@ -2,7 +2,7 @@
  * Unit tests covering core shared physics, combat formulas, timeout forfeiture rules,
  * JWT scope isolation between session tokens and WebSocket tickets, and JWKS cache TTL clamping.
  */
-import { canReconnectToShard } from "../shard-routing";
+import { canReconnectToShard, pickFirstOpenShard } from "../shard-routing";
 import { pickEncounterPairs, type EncounterCandidate } from "../encounters";
 import { describe, expect, test } from "bun:test";
 import { stepMovement, MAP_WIDTH, MAP_HEIGHT, PLAYER_RADIUS, WALLS } from "../../../../shared/map-zones";
@@ -138,5 +138,69 @@ describe("shard reconnect routing", () => {
 
   test("rejects an untracked player once the shard is at its hard cap", () => {
     expect(canReconnectToShard({ count: 50, hasPlayer: false, hardCap: 50 })).toBe(false);
+  });
+});
+
+describe("fill-first shard selection", () => {
+  const ids = ["s1", "s2", "s3", "s4"];
+  const noCache = () => undefined;
+
+  test("a burst of joins shares shard 1 until it is full", async () => {
+    const cache = new Map<string, number>();
+    const picks: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const open = await pickFirstOpenShard(ids, 40, (id) => cache.get(id), async () => 0);
+      picks.push(open!.roomId);
+      cache.set(open!.roomId, open!.count + 1); // optimistic bump as in issueShardSessionTicket
+    }
+    expect(picks).toEqual(["s1", "s1", "s1"]);
+  });
+
+  test("moves to the next shard once the first reaches the soft cap", async () => {
+    const cache = new Map([["s1", 40]]);
+    const open = await pickFirstOpenShard(ids, 40, (id) => cache.get(id), async () => 5);
+    expect(open).toEqual({ roomId: "s2", count: 5 });
+  });
+
+  test("probes stale shards one at a time and stops at the first open one", async () => {
+    const probed: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const counts: Record<string, number> = { s1: 40, s2: 40, s3: 7, s4: 0 };
+    const open = await pickFirstOpenShard(ids, 40, noCache, async (id) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      probed.push(id);
+      await Promise.resolve();
+      inFlight--;
+      return counts[id];
+    });
+    expect(open).toEqual({ roomId: "s3", count: 7 });
+    expect(probed).toEqual(["s1", "s2", "s3"]);
+    expect(maxInFlight).toBe(1);
+  });
+
+  test("skips shards whose probe fails and reports them", async () => {
+    const failed: string[] = [];
+    const open = await pickFirstOpenShard(
+      ids,
+      40,
+      noCache,
+      async (id) => {
+        if (id === "s1") throw new Error("down");
+        return 1;
+      },
+      (id) => failed.push(id)
+    );
+    expect(open?.roomId).toBe("s2");
+    expect(failed).toEqual(["s1"]);
+  });
+
+  test("returns null when every shard is full or unreachable", async () => {
+    const open = await pickFirstOpenShard(ids, 40, (id) => (id === "s1" ? 40 : undefined), async (id) => {
+      if (id === "s2") throw new Error("down");
+      return 40;
+    });
+    expect(open).toBeNull();
   });
 });
