@@ -46,17 +46,25 @@ export class GameSceneController {
       return;
     }
 
-    this.host.appendChild(this.app.canvas);
-    this.app.stage.addChild(this.world);
-    this.buildStaticMap();
-    this.bindInputListeners();
-    this.initialized = true;
+    try {
+      this.host.appendChild(this.app.canvas);
+      this.app.stage.addChild(this.world);
+      this.buildStaticMap();
+      this.bindInputListeners();
+      this.initialized = true;
 
-    this.app.ticker.add((ticker) => {
-      // Clamp frame delta to 100ms so background tab switches do not cause huge simulation jumps.
-      const dt = Math.min(0.1, ticker.deltaMS / 1000);
-      this.tick(dt);
-    });
+      this.app.ticker.add((ticker) => {
+        // Clamp frame delta to 100ms so background tab switches do not cause huge simulation jumps.
+        const dt = Math.min(0.1, ticker.deltaMS / 1000);
+        this.tick(dt);
+      });
+    } catch (err) {
+      // The renderer started but the scene could not be built: release the canvas and GPU resources
+      // (and any listeners already bound) instead of leaking them, then let the caller report the failure.
+      this.initialized = true;
+      this.destroy();
+      throw err;
+    }
   }
 
   /**

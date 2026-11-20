@@ -19,13 +19,15 @@ These also run in CI (`.github/workflows/ci.yml`) on every push, in parallel wit
 | `battle` | zone encounters and who leads, fresh D1 stats in combat, turn rules, HEAL/FLEE, exactly-once rewards, rematch rules |
 | `stats-failure` | invalid D1 data: no battle, one notice per player, automatic recovery, refused joins |
 | `timeouts` | AFK auto-attack, forfeit after two missed turns, rewards for the other player, resuming a battle after a drop |
+| `rate-limit` | sign-in, join and reconnect-ticket limits: 429 with `Retry-After`, per-client and per-user buckets |
+| `reward-outage` | D1 down when a battle ends: players still told, reward retried with backoff, credited exactly once after recovery, survives its players leaving |
 | `capacity` | rollover at the soft cap (40), reconnects and new joins at the hard cap (50), `409`/`503` responses |
 
 `support/client.ts` has a small scripted `GameClient` (join, walk into a building, autoplay turns, wait for a
 message) that new tests can reuse.
 
-Not covered: a real D1 outage (the local D1 cannot be made to fail on demand), reward retry after such an
-outage, and real Google sign-in.
+The D1 outage in `reward-outage` is simulated by renaming the `reward_claims` table in the Worker's local database
+(the local D1 cannot be made to fail otherwise). Not covered: a real D1 outage on Cloudflare and real Google sign-in.
 
 Note: Bun's WebSocket client reports a server-initiated close only after about 10 seconds (Chromium: about
 2 seconds), so close-code assertions wait longer than a browser would.

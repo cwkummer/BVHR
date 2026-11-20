@@ -20,6 +20,12 @@ import {
   regionalShardId,
   type Continent
 } from "shared/shard-config";
+import {
+  RATE_LIMITED_MESSAGE,
+  RATE_LIMIT_RETRY_AFTER_SEC,
+  clientIpKey,
+  isWithinRateLimit
+} from "./http-rate-limit";
 import { d1UserStore, findOrCreateUser, type GoogleUser } from "./user-provisioning";
 import { requireGoogleClientId, requireJwtSecret } from "./config";
 import { canReconnectToShard, pickFirstOpenShard, type ShardStats } from "./shard-routing";
@@ -38,6 +44,10 @@ export type Env = {
   GAME_ROOM: DurableObjectNamespace;
   JWT_SECRET: string;
   GOOGLE_CLIENT_ID: string;
+  /** Limits sign-in attempts per client IP (see wrangler.jsonc). */
+  AUTH_LIMITER: RateLimit;
+  /** Limits shard joins and reconnect tickets per user (see wrangler.jsonc). */
+  TICKET_LIMITER: RateLimit;
 };
 
 type ShardCountCacheEntry = {
@@ -410,6 +420,10 @@ const app = baseApp
   // Verifies a Google ID token, provisions a new user row with a unique username if needed,
   // and returns a scoped session JWT along with the user's public profile.
   .post("/api/auth/google", async (c) => {
+    // First, before any parsing or Google/D1 work: sign-in is unauthenticated and the most expensive route.
+    if (!(await isWithinRateLimit(c.env.AUTH_LIMITER, `auth:${clientIpKey(c.req.raw.headers)}`))) {
+      return c.json({ error: RATE_LIMITED_MESSAGE }, 429, { "Retry-After": RATE_LIMIT_RETRY_AFTER_SEC });
+    }
     const secret = requireJwtSecret(c.env);
     const googleClientId = requireGoogleClientId(c.env);
 
@@ -449,6 +463,9 @@ const app = baseApp
   .post("/api/join", async (c) => {
     const req = await readShardTicketRequest(c, "resumeRoomId");
     if (!req) return c.json({ error: "Invalid or expired session token" }, 401);
+    if (!(await isWithinRateLimit(c.env.TICKET_LIMITER, `join:${req.userId}`))) {
+      return c.json({ error: RATE_LIMITED_MESSAGE }, 429, { "Retry-After": RATE_LIMIT_RETRY_AFTER_SEC });
+    }
 
     const result = await issueShardSessionTicket(
       c.env,
@@ -465,6 +482,9 @@ const app = baseApp
   .post("/api/ws-ticket", async (c) => {
     const req = await readShardTicketRequest(c, "roomId");
     if (!req) return c.json({ error: "Invalid or expired session token" }, 401);
+    if (!(await isWithinRateLimit(c.env.TICKET_LIMITER, `ticket:${req.userId}`))) {
+      return c.json({ error: RATE_LIMITED_MESSAGE }, 429, { "Retry-After": RATE_LIMIT_RETRY_AFTER_SEC });
+    }
 
     const result = await issueReconnectTicket(
       c.env,

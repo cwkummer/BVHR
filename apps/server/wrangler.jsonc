@@ -31,6 +31,12 @@
       "migrations_dir": "drizzle-d1/migrations"
     }
   ],
+  // HTTP rate limits (per Cloudflare location). AUTH_LIMITER is keyed by client IP, TICKET_LIMITER by user and
+  // route; both fail open in code if the limiter errors. `period` may only be 10 or 60 seconds.
+  "ratelimits": [
+    { "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+    { "name": "TICKET_LIMITER", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } }
+  ],
   // Durable Object namespace binding for stateful regional overworld shard rooms (GameRoom).
   "durable_objects": {
     "bindings": [
@@ -64,6 +70,11 @@
           "database_id": "REPLACE_WITH_PROD_D1_ID",
           "migrations_dir": "drizzle-d1/migrations"
         }
+      ],
+      // Rate limit bindings are not inherited by environments; keep these in step with the top level.
+      "ratelimits": [
+        { "name": "AUTH_LIMITER", "namespace_id": "2001", "simple": { "limit": 10, "period": 60 } },
+        { "name": "TICKET_LIMITER", "namespace_id": "2002", "simple": { "limit": 30, "period": 60 } }
       ],
       "durable_objects": {
         "bindings": [

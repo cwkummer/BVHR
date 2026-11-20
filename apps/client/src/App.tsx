@@ -11,6 +11,7 @@ import { useGameRoom } from "./hooks/useGameRoom";
 // Loaded on demand so the sign-in screen does not download PixiJS until a player is in a room.
 const GameCanvas = lazy(() => import("./components/GameCanvas").then((m) => ({ default: m.GameCanvas })));
 import { BattleModal } from "./components/BattleModal";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { BattleResultModal } from "./components/BattleResultModal";
 import {
   createApiClient,
@@ -579,14 +580,19 @@ export default function App() {
 
       {/* Interactive PixiJS 2D overworld canvas; movement input locks while disconnected, unsynced, or in combat */}
       {canvasPlayerId && (
-        <Suspense fallback={<div className="w-full h-screen" />}>
-          <GameCanvas
-            myId={canvasPlayerId}
-            positionsRef={positionsRef}
-            movementLocked={!connected || !synced || Boolean(battle) || Boolean(battleResult)}
-            sendWASD={sendWASD}
-          />
-        </Suspense>
+        <ErrorBoundary
+          title="The game view could not load"
+          message="This usually happens after the game has been updated while it was open. Reload the page to get the new version."
+        >
+          <Suspense fallback={<div className="w-full h-screen" />}>
+            <GameCanvas
+              myId={canvasPlayerId}
+              positionsRef={positionsRef}
+              movementLocked={!connected || !synced || Boolean(battle) || Boolean(battleResult)}
+              sendWASD={sendWASD}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       {/* Turn-based encounter modal displayed whenever the player is participating in an active battle */}

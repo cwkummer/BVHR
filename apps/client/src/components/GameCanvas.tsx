@@ -3,8 +3,9 @@
  * PixiJS canvas. Bridges React props (`movementLocked`, `myId`, `positionsRef`, `sendWASD`)
  * into the imperative rendering/input loop without triggering React re-renders per frame.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EntityPos } from "../hooks/useGameRoom";
+import { ErrorPanel } from "./ErrorPanel";
 import { GameSceneController } from "./GameSceneController";
 
 type Props = {
@@ -17,6 +18,9 @@ type Props = {
 export function GameCanvas({ myId, positionsRef, movementLocked, sendWASD }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<GameSceneController | null>(null);
+  // Set when the graphics could not start (no WebGL, blocked GPU, ...); `attempt` restarts them.
+  const [initError, setInitError] = useState<Error | null>(null);
+  const [attempt, setAttempt] = useState(0);
   // Keep latest movementLocked value in a ref so the imperative scene callback can read it synchronously.
   const movementLockedRef = useRef(movementLocked);
   movementLockedRef.current = movementLocked;
@@ -38,13 +42,33 @@ export function GameCanvas({ myId, positionsRef, movementLocked, sendWASD }: Pro
       sendWASD
     );
     controllerRef.current = controller;
-    void controller.init();
+    let cancelled = false;
+    controller.init().catch((err: unknown) => {
+      // `init` is async, so React's error boundaries cannot see it; show the failure ourselves.
+      console.error("Game graphics failed to start:", err);
+      if (!cancelled) setInitError(err instanceof Error ? err : new Error(String(err)));
+    });
 
     return () => {
+      cancelled = true;
       controllerRef.current = null;
       controller.destroy();
     };
-  }, [myId, positionsRef, sendWASD]);
+  }, [myId, positionsRef, sendWASD, attempt]);
+
+  if (initError) {
+    return (
+      <ErrorPanel
+        title="The game view could not start"
+        message="Your browser could not start the game graphics. Try again, or reload the page. If it keeps happening, check that hardware acceleration is turned on in your browser settings."
+        detail={initError.stack ?? initError.message}
+        onRetry={() => {
+          setInitError(null);
+          setAttempt((n) => n + 1);
+        }}
+      />
+    );
+  }
 
   return <div ref={hostRef} className="w-full h-screen overflow-hidden" />;
 }
