@@ -60,7 +60,17 @@ declare global {
           initialize: (config: {
             client_id: string;
             callback: (response: { credential?: string }) => void;
+            auto_select?: boolean;
+            cancel_on_tap_outside?: boolean;
           }) => void;
+          prompt: (
+            onMoment?: (n: {
+              isNotDisplayed: () => boolean;
+              isSkippedMoment: () => boolean;
+              isDismissedMoment: () => boolean;
+            }) => void
+          ) => void;
+          cancel: () => void;
           renderButton: (
             parent: HTMLElement,
             options: { theme?: "outline" | "filled_blue" | "filled_black"; size?: "large" | "medium" | "small" }
@@ -73,6 +83,71 @@ declare global {
 
 // Public Google OAuth client ID injected at build time by Vite.
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
+
+const GSI_SCRIPT_ID = "google-gsi-script";
+// How long to wait for Google to hand back a credential without any user interaction.
+const SILENT_REAUTH_TIMEOUT_MS = 8000;
+
+/** Loads Google Identity Services once; resolves when `window.google.accounts.id` is usable. */
+function loadGsi(): Promise<void> {
+  if (window.google?.accounts?.id) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const existing = document.getElementById(GSI_SCRIPT_ID) as HTMLScriptElement | null;
+    const script = existing ?? document.createElement("script");
+    script.addEventListener("load", () => resolve(), { once: true });
+    script.addEventListener("error", () => reject(new Error("Could not load Google sign-in")), { once: true });
+    if (!existing) {
+      script.id = GSI_SCRIPT_ID;
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
+    }
+  });
+}
+
+/** Reads the `sub` claim of a session token. Only used to compare identities, never to trust one. */
+function sessionTokenSubject(token: string): string | null {
+  try {
+    const payload = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const sub = (JSON.parse(atob(payload)) as { sub?: unknown }).sub;
+    return typeof sub === "string" ? sub : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Asks Google for a credential without showing a sign-in screen (One Tap with auto-select, which
+ * succeeds when the player is still signed in to Google and previously approved this app).
+ * Resolves to null if Google shows nothing, the player dismisses it, or it takes too long.
+ */
+function requestSilentGoogleCredential(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const gsi = window.google?.accounts?.id;
+    if (!gsi || !GOOGLE_CLIENT_ID) {
+      resolve(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      gsi.cancel();
+      resolve(null);
+    }, SILENT_REAUTH_TIMEOUT_MS);
+    const finish = (credential: string | null) => {
+      window.clearTimeout(timer);
+      resolve(credential);
+    };
+    gsi.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      auto_select: true,
+      cancel_on_tap_outside: false,
+      callback: (resp) => finish(resp.credential ?? null)
+    });
+    gsi.prompt((moment) => {
+      if (moment.isNotDisplayed() || moment.isSkippedMoment()) finish(null);
+    });
+  });
+}
 
 export default function App() {
   // Hydrate persisted session token from sessionStorage on initial mount.
@@ -93,26 +168,91 @@ export default function App() {
   const googleBtnRef = useRef<HTMLDivElement | null>(null);
   // Monotonic epoch counter used to ignore async join completions from superseded/expired sessions.
   const joinEpochRef = useRef(0);
+  // Current session, readable from callbacks without making them depend on the token. A silent
+  // renewal swaps the token here, so a running connection and its reconnect loop keep their identity.
+  const authRef = useRef<AuthSession | null>(auth);
+  const refreshInFlightRef = useRef<Promise<boolean> | null>(null);
 
   /**
    * Clears stored credentials, last-joined room hint, and active React auth/room state,
    * while advancing `joinEpochRef` to invalidate any in-flight asynchronous join requests.
    */
-  const clearExpiredSession = useCallback(() => {
+  const clearExpiredSession = useCallback((keepRoomHint = false) => {
     joinEpochRef.current += 1;
+    authRef.current = null;
     sessionStorage.removeItem("rpg_auth");
-    sessionStorage.removeItem("rpg_last_room");
+    if (!keepRoomHint) sessionStorage.removeItem("rpg_last_room");
     setAuth(null);
     setSession(null);
   }, []);
 
   /**
-   * Handles HTTP 401 responses by clearing invalid session state and surfacing a re-login prompt.
+   * Handles an unrecoverable HTTP 401 by clearing the session and asking for a manual sign-in.
+   * The last-room hint is kept so signing back in resumes the same shard (and any battle in it).
    */
   const handleAuthExpired = useCallback(() => {
-    clearExpiredSession();
+    clearExpiredSession(true);
     setJoinError("Session expired. Please sign in with Google again.");
   }, [clearExpiredSession]);
+
+  /**
+   * Tries to renew an expired session without the player doing anything, by asking Google for a
+   * credential silently and exchanging it for a new session token. Concurrent callers share one
+   * attempt. Returns false when it cannot (the caller then asks the player to sign in), including when
+   * Google would sign in as a different account or the player signed out while it was running.
+   */
+  const refreshSession = useCallback((): Promise<boolean> => {
+    if (refreshInFlightRef.current) return refreshInFlightRef.current;
+    const epoch = joinEpochRef.current;
+    const previousSubject = authRef.current ? sessionTokenSubject(authRef.current.token) : null;
+    const attempt = (async () => {
+      try {
+        await loadGsi();
+        const credential = await requestSilentGoogleCredential();
+        if (!credential || joinEpochRef.current !== epoch) return false;
+        const res = await publicApiClient.api.auth.google.$post({ json: { idToken: credential } });
+        if (!res.ok || joinEpochRef.current !== epoch) return false;
+        const { token } = await res.json();
+        // Never swap the account of a running game; a different Google account must sign in explicitly.
+        if (previousSubject && sessionTokenSubject(token) !== previousSubject) return false;
+        const nextAuth: AuthSession = { token };
+        authRef.current = nextAuth;
+        sessionStorage.setItem("rpg_auth", JSON.stringify(nextAuth));
+        setAuth(nextAuth);
+        return true;
+      } catch {
+        return false;
+      }
+    })().finally(() => {
+      refreshInFlightRef.current = null;
+    });
+    refreshInFlightRef.current = attempt;
+    return attempt;
+  }, []);
+
+  /**
+   * Runs an authenticated request with the current session token. On a 401 it first tries a silent
+   * re-authentication and repeats the request once; only if that fails does it end the session.
+   * A 401 never reaches the caller: it has already been handled and surfaces as AuthExpiredError.
+   */
+  const authedRequest = useCallback(
+    async (send: (token: string) => Promise<Response>): Promise<Response> => {
+      const token = authRef.current?.token;
+      if (!token) throw new AuthExpiredError();
+      const first = await send(token);
+      if (first.status !== 401) return first;
+      if (await refreshSession()) {
+        const renewed = authRef.current?.token;
+        if (renewed) {
+          const second = await send(renewed);
+          if (second.status !== 401) return second;
+        }
+      }
+      handleAuthExpired();
+      throw new AuthExpiredError();
+    },
+    [refreshSession, handleAuthExpired]
+  );
 
   /**
    * Exchanges a Google credential JWT with `/api/auth/google` for a server-signed session token
@@ -130,65 +270,54 @@ export default function App() {
     const nextAuth: AuthSession = {
       token: data.token
     };
+    authRef.current = nextAuth;
     sessionStorage.setItem("rpg_auth", JSON.stringify(nextAuth));
     setAuth(nextAuth);
   }, []);
 
   /**
    * Lazily loads Google Identity Services (`gsi/client`) when unauthenticated and renders
-   * the sign-in button into `googleBtnRef`. Cleans up load listeners if unmounted early.
+   * the sign-in button into `googleBtnRef`.
    */
   useEffect(() => {
     if (auth || !GOOGLE_CLIENT_ID) return;
+    let cancelled = false;
 
-    const scriptId = "google-gsi-script";
-    const mountButton = () => {
-      if (!googleBtnRef.current || !window.google?.accounts?.id) return;
-      googleBtnRef.current.innerHTML = "";
-      window.google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: (resp) => {
-          if (!resp.credential) {
-            setJoinError("Missing Google credential");
-            return;
+    loadGsi()
+      .then(() => {
+        if (cancelled || !googleBtnRef.current || !window.google?.accounts?.id) return;
+        googleBtnRef.current.innerHTML = "";
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: (resp) => {
+            if (!resp.credential) {
+              setJoinError("Missing Google credential");
+              return;
+            }
+            handleGoogleCredential(resp.credential).catch((err: Error) => {
+              setJoinError(err.message);
+            });
           }
-          handleGoogleCredential(resp.credential).catch((err: Error) => {
-            setJoinError(err.message);
-          });
-        }
+        });
+        window.google.accounts.id.renderButton(googleBtnRef.current, {
+          theme: "filled_blue",
+          size: "large"
+        });
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setJoinError(err.message);
       });
-      window.google.accounts.id.renderButton(googleBtnRef.current, {
-        theme: "filled_blue",
-        size: "large"
-      });
+
+    return () => {
+      cancelled = true;
     };
-
-    const existing = document.getElementById(scriptId) as HTMLScriptElement | null;
-    if (existing) {
-      if (window.google?.accounts?.id) {
-        mountButton();
-      } else {
-        existing.addEventListener("load", mountButton, { once: true });
-      }
-      return () => {
-        existing.removeEventListener("load", mountButton);
-      };
-    }
-
-    const script = document.createElement("script");
-    script.id = scriptId;
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    script.defer = true;
-    script.onload = mountButton;
-    document.head.appendChild(script);
   }, [auth, handleGoogleCredential]);
 
   /**
    * Signs the user out explicitly and clears any displayed matchmaking or auth error.
    */
   const signOut = useCallback(() => {
-    clearExpiredSession();
+    clearExpiredSession(false);
     setJoinError(null);
   }, [clearExpiredSession]);
 
@@ -197,16 +326,11 @@ export default function App() {
    * passing any previously visited `rpg_last_room` so the server can resume an active player/battle.
    */
   const requestRoom = useCallback(
-    async (authToken: string): Promise<RoomSession> => {
-      const api = createApiClient(authToken);
+    async (): Promise<RoomSession> => {
       const resumeRoomId = sessionStorage.getItem("rpg_last_room");
-      const res = await api.api.join.$post({
-        json: resumeRoomId ? { resumeRoomId } : {}
-      });
-      if (res.status === 401) {
-        handleAuthExpired();
-        throw new AuthExpiredError();
-      }
+      const res = await authedRequest((token) =>
+        createApiClient(token).api.join.$post({ json: resumeRoomId ? { resumeRoomId } : {} })
+      );
       if (!res.ok) {
         throw new Error(await readApiError(res, "Failed to join room"));
       }
@@ -214,7 +338,7 @@ export default function App() {
       sessionStorage.setItem("rpg_last_room", next.roomId);
       return next;
     },
-    [handleAuthExpired]
+    [authedRequest]
   );
 
   /**
@@ -223,17 +347,9 @@ export default function App() {
    */
   const fetchWsTicket = useCallback(
     async (targetRoomId: string): Promise<string> => {
-      if (!auth?.token) {
-        throw new Error("Missing auth token");
-      }
-      const api = createApiClient(auth.token);
-      const res = await api.api["ws-ticket"].$post({
-        json: { roomId: targetRoomId }
-      });
-      if (res.status === 401) {
-        handleAuthExpired();
-        throw new AuthExpiredError();
-      }
+      const res = await authedRequest((token) =>
+        createApiClient(token).api["ws-ticket"].$post({ json: { roomId: targetRoomId } })
+      );
       // 409: the server will not take us back into this exact room (e.g. full); re-matchmake.
       // 503 is treated as transient and retried with the normal reconnect backoff.
       if (res.status === 409) {
@@ -249,37 +365,31 @@ export default function App() {
       }
       return data.wsTicket;
     },
-    [auth?.token, handleAuthExpired]
+    [authedRequest]
   );
 
   /**
    * Validates the stored session token against `/api/me` on mount or token change.
    * Only forces sign-out on explicit 401; transient errors keep the current session intact.
    */
+  const signedIn = auth !== null;
   useEffect(() => {
-    if (!auth?.token) return;
+    if (!signedIn) return;
     let cancelled = false;
-    const api = createApiClient(auth.token);
 
-    api.api.me
-      .$get()
+    authedRequest((token) => createApiClient(token).api.me.$get())
       .then(async (res) => {
-        if (cancelled) return;
-        if (res.status === 401) {
-          handleAuthExpired();
-          return;
-        }
-        if (!res.ok) return;
+        if (cancelled || !res.ok) return;
         await res.json();
       })
       .catch(() => {
-        // Keep existing session state if background /api/me check fails transiently.
+        // Expiry is handled inside authedRequest; keep the session on any transient failure.
       });
 
     return () => {
       cancelled = true;
     };
-  }, [auth?.token, handleAuthExpired]);
+  }, [signedIn, authedRequest]);
 
   // Shares a single in-flight /api/join promise across retry effects and shard failovers.
   const inFlightJoinRef = useRef<Promise<RoomSession> | null>(null);
@@ -289,8 +399,8 @@ export default function App() {
    * and epoch checks so stale responses never overwrite newer session state.
    */
   const runJoinRequest = useCallback(
-    (authToken: string, epoch: number, isCancelled?: () => boolean) => {
-      const task = (inFlightJoinRef.current ?? requestRoom(authToken)).finally(() => {
+    (epoch: number, isCancelled?: () => boolean) => {
+      const task = (inFlightJoinRef.current ?? requestRoom()).finally(() => {
         if (inFlightJoinRef.current === task) {
           inFlightJoinRef.current = null;
         }
@@ -313,29 +423,29 @@ export default function App() {
 
   // Automatically join a regional shard once authenticated or when the user clicks Retry World Join.
   useEffect(() => {
-    if (!auth?.token) {
+    if (!signedIn) {
       inFlightJoinRef.current = null;
       return;
     }
     let cancelled = false;
     const epoch = joinEpochRef.current;
-    runJoinRequest(auth.token, epoch, () => cancelled);
+    runJoinRequest(epoch, () => cancelled);
 
     return () => {
       cancelled = true;
     };
-  }, [auth?.token, runJoinRequest, retryNonce]);
+  }, [signedIn, runJoinRequest, retryNonce]);
 
   /**
    * Triggered by `useGameRoom` when repeated initial WebSocket connection attempts fail,
    * clearing the cached `rpg_last_room` hint and re-running shard selection.
    */
   const handleShardUnavailable = useCallback(() => {
-    if (!auth?.token) return;
+    if (!signedIn) return;
     const epoch = ++joinEpochRef.current;
     sessionStorage.removeItem("rpg_last_room");
-    runJoinRequest(auth.token, epoch);
-  }, [auth?.token, runJoinRequest]);
+    runJoinRequest(epoch);
+  }, [signedIn, runJoinRequest]);
 
   // Connect to the assigned GameRoom Durable Object and subscribe to live world/combat updates.
   const {
@@ -357,7 +467,7 @@ export default function App() {
   } = useGameRoom(
     session?.roomId ?? null,
     session?.wsTicket ?? null,
-    auth?.token ? fetchWsTicket : null,
+    signedIn ? fetchWsTicket : null,
     handleShardUnavailable
   );
 
@@ -390,7 +500,8 @@ export default function App() {
             </button>
           )}
           <button
-            onClick={signOut}
+            // Without a session this is only dismissing an expiry notice, so the resume hint stays.
+            onClick={auth ? signOut : () => setJoinError(null)}
             className="px-4 py-2 rounded bg-slate-800 text-white text-sm border border-slate-600 cursor-pointer"
           >
             Back to Google Sign-In

@@ -188,16 +188,16 @@ describe("session tokens and WebSocket tickets", () => {
   });
 
   test("an expired session token is rejected", async () => {
-    const old = await mintSessionToken(SECRET, "u1", "Alice", Date.now() - 8 * 24 * 3600 * 1000);
+    const old = await mintSessionToken(SECRET, "u1", "Alice", Date.now() - 25 * 3600 * 1000);
     expect(await verifySessionToken(`Bearer ${old}`, SECRET)).toBeNull();
   });
 
-  test("session tokens last 7 days; tickets last 20 seconds", async () => {
+  test("session tokens last 24 hours; tickets last 20 seconds", async () => {
     const claims = (t: string) => JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
     const now = nowSec();
     const session = claims(await mintSessionToken(SECRET, "u1", "A"));
-    expect(session.exp - now).toBeGreaterThan(7 * 24 * 3600 - 5);
-    expect(session.exp - now).toBeLessThanOrEqual(7 * 24 * 3600);
+    expect(session.exp - now).toBeGreaterThan(24 * 3600 - 5);
+    expect(session.exp - now).toBeLessThanOrEqual(24 * 3600);
     const ticket = claims(await mintWsTicket(SECRET, "u1", "na-overworld-1"));
     expect(ticket.exp - now).toBeGreaterThan(15);
     expect(ticket.exp - now).toBeLessThanOrEqual(20);

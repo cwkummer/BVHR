@@ -44,7 +44,7 @@ const JWKS_RETRY_AFTER_FAILURE_MS = 30_000;
 const JWT_CLOCK_SKEW_SEC = 60;
 // A ticket is used immediately after it is minted, and a reconnect mints a fresh one, so keep it short.
 const WS_TICKET_TTL_SEC = 20;
-const SESSION_TTL_SEC = 60 * 60 * 24 * 7;
+const SESSION_TTL_SEC = 60 * 60 * 24;
 
 // Module-level JWKS key cache and single-flight fetch promise to avoid thundering herds.
 let jwksCache: JwksCache | null = null;
@@ -252,7 +252,7 @@ export async function verifyGoogleIdTokenWithJwks(
 }
 
 /**
- * Mints a 7-day HS256 session JWT scoped to `scope: "session"` for REST/RPC API authentication.
+ * Mints a 24-hour HS256 session JWT scoped to `scope: "session"` for REST/RPC API authentication.
  */
 export async function mintSessionToken(
   secret: string,
