@@ -16,7 +16,7 @@
     "db:migrate:dev": "bun --filter server exec wrangler d1 migrations apply rpg-global-db-dev --remote",
     "db:migrate:prod": "bun --filter server exec wrangler d1 migrations apply rpg-global-db-prod --env prod --remote",
     "deploy:dev": "bun run typecheck && bun run test && bun run db:migrate:dev && bun --filter client build && bun --filter server exec wrangler deploy",
-    "deploy:prod": "bun run typecheck && bun run test && bun run db:migrate:prod && bun --filter client build && bun --filter server exec wrangler deploy --env prod"
+    "deploy:prod": "bun run typecheck && bun run test && bun run test:integration && bun run db:migrate:prod && bun --filter client build && bun --filter server exec wrangler deploy --env prod"
   },
   "devDependencies": {
     "typescript": "^5.7.2"
@@ -32,7 +32,7 @@
     "db:migrate:dev": "Applies D1 migrations to the remote dev D1 database.",
     "db:migrate:prod": "Applies D1 migrations to the remote prod D1 database.",
     "deploy:dev": "Runs typecheck, tests, remote dev DB migrations, client build, and default Worker deploy.",
-    "deploy:prod": "Runs typecheck, tests, remote prod DB migrations, client build, and prod Worker deploy.",
+    "deploy:prod": "Runs typecheck, unit and integration tests, remote prod DB migrations, client build, and prod Worker deploy.",
     "test:integration": "Boots a real local Worker + Durable Object + D1 per test file (wrangler dev) and runs the integration suites in apps/server/integration; takes about 3 minutes."
   }
 }

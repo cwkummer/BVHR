@@ -6,7 +6,7 @@
  * Each test file starts its own server, so every file begins with an empty room and database.
  */
 import { Database } from "bun:sqlite";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { mintSessionToken } from "../../src/auth";
@@ -55,6 +55,9 @@ function run(cmd: string[]): void {
  */
 export async function startServer(users: SeedUser[]): Promise<TestServer> {
   const stateDir = mkdtempSync(join(tmpdir(), "bvhr-it-"));
+  // wrangler refuses to start when the configured static-assets directory is missing, as on a fresh checkout
+  // or in CI where the client has not been built. These tests never request a static file, so an empty one is fine.
+  mkdirSync(join(SERVER_DIR, "../client/dist"), { recursive: true });
 
   run(["bunx", "wrangler", "d1", "migrations", "apply", DB_NAME, "--local", "--persist-to", stateDir]);
 

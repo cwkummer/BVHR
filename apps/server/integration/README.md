@@ -10,6 +10,9 @@ bun run test:integration                                   # everything (about 3
 cd apps/server && bun test ./integration/capacity.integration.test.ts --timeout 120000   # one file
 ```
 
+These also run in CI (`.github/workflows/ci.yml`) on every push, in parallel with typecheck and the unit tests, and
+`bun run deploy:prod` runs them before it migrates or deploys anything.
+
 | File | Covers |
 |---|---|
 | `matchmaking` | auth failures, fill-first shards, roster/join/leave messages, shard isolation, reconnecting to the same room, second-tab takeover, forged identity header |
