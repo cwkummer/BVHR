@@ -1,0 +1,14 @@
+{
+  // Typechecks the Bun test files (unit tests and the integration suite), which the main server project
+  // excludes because they need Bun's types. The Worker code they import is checked here as well.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["bun", "@cloudflare/workers-types"]
+  },
+  "include": ["./src/**/*.ts", "./src/**/*.d.ts", "./integration/**/*.ts", "../../shared/**/*.ts"]
+}

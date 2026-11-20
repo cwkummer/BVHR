@@ -19,6 +19,7 @@
     "deploy:prod": "bun run typecheck && bun run test && bun run test:integration && bun run db:migrate:prod && bun --filter client build && bun --filter server exec wrangler deploy --env prod"
   },
   "devDependencies": {
+    "@types/bun": "^1.4.5",
     "typescript": "^5.7.2"
   },
   "_comment_overview": "Root Bun workspace manifest orchestrating development, testing, typechecking, database migrations, and Cloudflare deployment across apps/client, apps/server, and shared.",

@@ -11,7 +11,15 @@ import { Hono, type Context } from "hono";
 import { drizzle } from "drizzle-orm/d1";
 import { eq } from "drizzle-orm";
 import { users, type UserProfile } from "./db/d1-schema";
-import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "shared/shard-config";
+import {
+  MAX_SHARDS_PER_REGION,
+  ROOM_HARD_CAP,
+  ROOM_SOFT_CAP,
+  isContinent,
+  parseShardId,
+  regionalShardId,
+  type Continent
+} from "shared/shard-config";
 import { d1UserStore, findOrCreateUser, type GoogleUser } from "./user-provisioning";
 import { requireGoogleClientId, requireJwtSecret } from "./config";
 import { canReconnectToShard, pickFirstOpenShard, type ShardStats } from "./shard-routing";
@@ -38,14 +46,10 @@ type ShardCountCacheEntry = {
 };
 
 // Soft cap (shared) triggers shard rollover during matchmaking; the hard cap is enforced inside GameRoom.
-const MAX_SHARDS_PER_REGION = 16;
 const SHARD_CACHE_TTL_MS = 3_000;
 
-const VALID_CONTINENTS = new Set(["na", "eu", "as", "oc", "sa", "af"]);
-const SHARD_ID_RE = /^(?:(na|eu|as|oc|sa|af)-)?overworld-([1-9]|1[0-6])$/;
-
 // Maps continent codes to Cloudflare Durable Object location hints for lower-latency shard placement.
-const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
+const CONTINENT_TO_HINT: Record<Continent, DurableObjectLocationHint> = {
   na: "wnam",
   eu: "weur",
   as: "apac",
@@ -62,33 +66,32 @@ const inFlightPlayerStats = new Map<string, Promise<ShardStats>>();
 /**
  * Normalizes a Cloudflare request continent code to a supported region prefix, defaulting to `"na"`.
  */
-function resolveContinent(cfContinent: unknown): string {
+function resolveContinent(cfContinent: unknown): Continent {
   const raw = typeof cfContinent === "string" ? cfContinent.toLowerCase() : "na";
-  return VALID_CONTINENTS.has(raw) ? raw : "na";
+  return isContinent(raw) ? raw : "na";
 }
 
 /**
  * Obtains a `GameRoom` Durable Object stub for `regionalRoomId` using the continent's location hint.
  */
-function getRoomStub(env: Env, regionalRoomId: string, continent: string) {
-  const hint = CONTINENT_TO_HINT[continent] ?? "wnam";
-  return env.GAME_ROOM.get(env.GAME_ROOM.idFromName(regionalRoomId), { locationHint: hint });
+function getRoomStub(env: Env, regionalRoomId: string, continent: Continent) {
+  return env.GAME_ROOM.get(env.GAME_ROOM.idFromName(regionalRoomId), {
+    locationHint: CONTINENT_TO_HINT[continent]
+  });
 }
 
 /**
  * Validates and normalizes a requested shard name (e.g. `"overworld-1"` or `"eu-overworld-3"`)
  * into its full regional room ID and target continent.
  */
-function normalizeRegionalRoomId(rawRoomId: string, defaultContinent: string): {
+function normalizeRegionalRoomId(rawRoomId: string, defaultContinent: Continent): {
   regionalRoomId: string;
-  targetContinent: string;
+  targetContinent: Continent;
 } | null {
-  const normalized = rawRoomId.trim().toLowerCase();
-  const match = SHARD_ID_RE.exec(normalized);
-  if (!match) return null;
-  const targetContinent = match[1] || defaultContinent;
-  const regionalRoomId = match[1] ? normalized : `${defaultContinent}-${normalized}`;
-  return { regionalRoomId, targetContinent };
+  const parsed = parseShardId(rawRoomId.trim().toLowerCase());
+  if (!parsed) return null;
+  const targetContinent = parsed.continent ?? defaultContinent;
+  return { regionalRoomId: regionalShardId(targetContinent, parsed.shard), targetContinent };
 }
 
 /**
@@ -98,7 +101,7 @@ function normalizeRegionalRoomId(rawRoomId: string, defaultContinent: string): {
 async function getShardCount(
   env: Env,
   regionalRoomId: string,
-  continent: string,
+  continent: Continent,
   now: number
 ): Promise<number> {
   const cached = shardCountCache.get(regionalRoomId);
@@ -139,7 +142,7 @@ async function getShardCount(
 async function fetchShardStatsWithPlayer(
   env: Env,
   regionalRoomId: string,
-  continent: string,
+  continent: Continent,
   playerId: string
 ): Promise<ShardStats> {
   const key = `${regionalRoomId}:${playerId}`;
@@ -180,12 +183,12 @@ async function fetchShardStatsWithPlayer(
  */
 async function selectFirstOpenRegionalShard(
   env: Env,
-  continent: string,
+  continent: Continent,
   now: number
 ): Promise<{ roomId: string; count: number } | null> {
   const regionShardIds: string[] = [];
   for (let shard = 1; shard <= MAX_SHARDS_PER_REGION; shard++) {
-    regionShardIds.push(`${continent}-overworld-${shard}`);
+    regionShardIds.push(regionalShardId(continent, shard));
   }
 
   return pickFirstOpenShard(
@@ -220,7 +223,7 @@ async function issueShardSessionTicket(
   env: Env,
   secret: string,
   userId: string,
-  continent: string,
+  continent: Continent,
   now: number,
   preferredRoomId?: unknown
 ): Promise<ShardTicketResult> {
@@ -287,7 +290,7 @@ async function issueReconnectTicket(
   env: Env,
   secret: string,
   userId: string,
-  continent: string,
+  continent: Continent,
   now: number,
   requestedRoomId?: unknown
 ): Promise<ShardTicketResult> {
@@ -343,7 +346,7 @@ function toPublicProfile(profile: UserProfile): PublicUserProfile {
 type ShardTicketRequest = {
   secret: string;
   userId: string;
-  continent: string;
+  continent: Continent;
   /** Optional room hint from the request body (`resumeRoomId` for join, `roomId` for ws-ticket). */
   roomHint: unknown;
 };
@@ -484,14 +487,14 @@ const app = baseApp
       return c.text("Expected WebSocket", 426);
     }
 
-    const rawRoomId = c.req.param("roomId").toLowerCase();
-    const match = SHARD_ID_RE.exec(rawRoomId);
-    if (!match) {
+    const parsedRoom = normalizeRegionalRoomId(
+      c.req.param("roomId"),
+      resolveContinent(c.req.raw.cf?.continent)
+    );
+    if (!parsedRoom) {
       return c.text("Invalid room shard", 400);
     }
-
-    const continent = resolveContinent(c.req.raw.cf?.continent);
-    const regionalRoomId = match[1] ? rawRoomId : `${continent}-${rawRoomId}`;
+    const { regionalRoomId, targetContinent: shardContinent } = parsedRoom;
 
     const ticket = c.req.query("ticket");
     if (!ticket) return c.text("Missing WebSocket ticket", 401);
@@ -501,7 +504,6 @@ const app = baseApp
       return c.text("Invalid or expired WebSocket ticket", 401);
     }
 
-    const shardContinent = match[1] || continent;
     const stub = getRoomStub(c.env, regionalRoomId, shardContinent);
     const headers = new Headers(c.req.raw.headers);
     // `set` replaces any client-supplied value, and only the verified user id is forwarded. The room reads

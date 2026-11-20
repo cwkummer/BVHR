@@ -16,7 +16,10 @@
     // Typecheck only via tsc; Vite handles actual JS/CSS bundling.
     "noEmit": true,
     // Skip typechecking third-party declaration files to keep builds fast.
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    // Load no ambient `@types/*` packages automatically (the repo root also has Bun's types for the tests,
+    // whose `Response` would replace the browser's). Vite's types come from `vite-env.d.ts`.
+    "types": []
   },
   // Server `AppType` is consumed through its emitted declarations, not by re-typechecking Worker sources.
   "references": [{ "path": "../server" }],
