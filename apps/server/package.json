@@ -2,7 +2,8 @@
   "name": "server",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "typecheck": "tsc -b"
   },
   "dependencies": {
     "drizzle-orm": "^0.40.0",
@@ -15,6 +16,7 @@
   },
   "_comment_overview": "Server workspace manifest for the Cloudflare Worker entry point (Hono API + WebSocket router) and GameRoom Durable Object with embedded SQLite and D1 persistence.",
   "_comment_scripts": {
+    "typecheck": "Emits declaration-only output (consumed by the client via project reference) while typechecking Worker sources.",
     "dev": "Runs the Worker and Durable Objects locally with Wrangler."
   },
   "_comment_dependencies": {

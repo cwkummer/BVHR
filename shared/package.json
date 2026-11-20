@@ -2,5 +2,8 @@
   "name": "shared",
   "private": true,
   "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "_comment_overview": "Shared workspace package containing cross-runtime protocol message types, world map layout definitions, and deterministic movement/collision physics."
 }

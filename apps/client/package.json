@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build"
+    "typecheck": "tsc -b",
+    "build": "tsc -b && vite build"
   },
   "dependencies": {
     "hono": "^4.7.0",
@@ -24,6 +25,7 @@
   "_comment_overview": "Client workspace manifest for the BHVR Edge RPG React + PixiJS v8 + Tailwind CSS v4 frontend. Uses Vite 6 for bundling and dev proxying (/api and /ws) to the Cloudflare Worker backend.",
   "_comment_scripts": {
     "dev": "Starts the Vite development server with HMR and backend proxy rules.",
+    "typecheck": "Typechecks the client against the server's emitted AppType declarations.",
     "build": "Runs strict TypeScript typechecking (tsc --noEmit) before creating the production bundle in dist/."
   },
   "_comment_dependencies": {

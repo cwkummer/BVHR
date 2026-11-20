@@ -10,13 +10,20 @@
     // Enforce strict null and type checking across server code.
     "strict": true,
     // Typecheck only via tsc; Wrangler handles bundling.
-    "noEmit": true,
+    "noEmit": false,
+    // Composite project emitting only declarations so the client can typecheck against `AppType`
+    // via a project reference without compiling Worker sources under browser globals.
+    "composite": true,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "outDir": "./.tsbuild",
+    "rootDir": "../..",
     // Skip typechecking external declaration files.
     "skipLibCheck": true,
     // Include Cloudflare Workers ambient runtime types (D1Database, DurableObjectNamespace, etc.).
     "types": ["@cloudflare/workers-types"]
   },
   // Include server source files and shared cross-workspace types/physics; exclude Bun unit tests.
-  "include": ["./src/**/*.ts", "../../shared/**/*.ts"],
+  "include": ["./src/**/*.ts", "./src/**/*.d.ts", "../../shared/**/*.ts"],
   "exclude": ["./src/__tests__/**/*.ts"]
 }

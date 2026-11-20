@@ -18,6 +18,8 @@
     // Skip typechecking third-party declaration files to keep builds fast.
     "skipLibCheck": true
   },
+  // Server `AppType` is consumed through its emitted declarations, not by re-typechecking Worker sources.
+  "references": [{ "path": "../server" }],
   // Include client source files and shared cross-workspace contracts/physics definitions.
   "include": ["./src/**/*.ts", "./src/**/*.tsx", "../../shared/**/*.ts"]
 }

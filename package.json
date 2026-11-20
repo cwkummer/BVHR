@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "bun --filter '*' dev",
     "test": "bun test",
-    "typecheck": "bun --filter '*' exec tsc --noEmit",
+    "typecheck": "(cd shared && bun run typecheck) && (cd apps/server && bun run typecheck) && (cd apps/client && bun run typecheck)",
     "preview:prod": "bun run typecheck && bun --filter client build && bun --filter server exec wrangler dev --env prod",
     "db:generate": "bunx drizzle-kit generate --config=apps/server/drizzle.d1.config.ts && bunx drizzle-kit generate --config=apps/server/drizzle.do.config.ts",
     "db:migrate:local": "bun --filter server exec wrangler d1 migrations apply rpg-global-db-dev --local",
@@ -24,7 +24,7 @@
   "_comment_scripts": {
     "dev": "Runs dev scripts concurrently across all workspace packages.",
     "test": "Executes unit tests with Bun test runner.",
-    "typecheck": "Runs tsc --noEmit across every workspace package.",
+    "typecheck": "Typechecks shared, then server (emits declarations), then client (consumes them).",
     "preview:prod": "Typechecks, builds the client bundle, and runs Wrangler locally against the prod env config.",
     "db:generate": "Generates Drizzle migrations for both D1 and Durable Object SQLite schemas.",
     "db:migrate:local": "Applies D1 migrations to local Wrangler state.",

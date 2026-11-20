@@ -32,26 +32,58 @@ export const WALLS: Rect[] = [
 export function stepMovement(x: number, y: number, dx: number, dy: number, dt: number): { x: number; y: number } {
   // Normalize diagonal inputs so diagonal movement speed matches cardinal movement speed.
   const len = Math.hypot(dx, dy) || 1;
-  let nx = Math.max(PLAYER_RADIUS, Math.min(MAP_WIDTH - PLAYER_RADIUS, x + (dx / len) * PLAYER_SPEED * dt));
-  let ny = Math.max(PLAYER_RADIUS, Math.min(MAP_HEIGHT - PLAYER_RADIUS, y + (dy / len) * PLAYER_SPEED * dt));
+  const stepX = (dx / len) * PLAYER_SPEED * dt;
+  const stepY = (dy / len) * PLAYER_SPEED * dt;
 
-  // Push candidate circle out of any overlapping wall rectangle.
-  for (const w of WALLS) {
-    const cx = Math.max(w.x, Math.min(nx, w.x + w.w));
-    const cy = Math.max(w.y, Math.min(ny, w.y + w.h));
-    const vx = nx - cx;
-    const vy = ny - cy;
-    const dSq = vx * vx + vy * vy;
-    if (dSq < PLAYER_RADIUS * PLAYER_RADIUS) {
-      const d = Math.sqrt(dSq) || 0.001;
-      nx += (vx / d) * (PLAYER_RADIUS - d);
-      ny += (vy / d) * (PLAYER_RADIUS - d);
+  // Sub-step so a single large `dt` can never carry the circle's center past a wall's surface
+  // (which would make the push-out normal degenerate and let players tunnel through).
+  const substeps = Math.max(1, Math.ceil(Math.hypot(stepX, stepY) / (PLAYER_RADIUS / 2)));
+  let nx = x;
+  let ny = y;
+  for (let i = 0; i < substeps; i++) {
+    nx = clampX(nx + stepX / substeps);
+    ny = clampY(ny + stepY / substeps);
+    for (const w of WALLS) {
+      const pushed = pushOutOfRect(nx, ny, w);
+      nx = pushed.x;
+      ny = pushed.y;
     }
+    // Re-clamp after wall resolution so wall pushes never push a player outside world bounds.
+    nx = clampX(nx);
+    ny = clampY(ny);
   }
 
-  // Re-clamp after wall resolution so wall pushes never push a player outside world bounds.
-  nx = Math.max(PLAYER_RADIUS, Math.min(MAP_WIDTH - PLAYER_RADIUS, nx));
-  ny = Math.max(PLAYER_RADIUS, Math.min(MAP_HEIGHT - PLAYER_RADIUS, ny));
-
   return { x: nx, y: ny };
+}
+
+const clampX = (v: number) => Math.max(PLAYER_RADIUS, Math.min(MAP_WIDTH - PLAYER_RADIUS, v));
+const clampY = (v: number) => Math.max(PLAYER_RADIUS, Math.min(MAP_HEIGHT - PLAYER_RADIUS, v));
+
+/**
+ * Pushes a circle at `(x, y)` out of rectangle `w` along the contact normal. If the circle's center
+ * is already inside the rectangle, exits along the axis of least penetration.
+ */
+function pushOutOfRect(x: number, y: number, w: Rect): { x: number; y: number } {
+  const cx = Math.max(w.x, Math.min(x, w.x + w.w));
+  const cy = Math.max(w.y, Math.min(y, w.y + w.h));
+  const vx = x - cx;
+  const vy = y - cy;
+  const dSq = vx * vx + vy * vy;
+  if (dSq >= PLAYER_RADIUS * PLAYER_RADIUS) return { x, y };
+
+  if (dSq > 0) {
+    const d = Math.sqrt(dSq);
+    return { x: x + (vx / d) * (PLAYER_RADIUS - d), y: y + (vy / d) * (PLAYER_RADIUS - d) };
+  }
+
+  // Center is inside the rectangle: exit through the nearest face.
+  const left = x - w.x;
+  const right = w.x + w.w - x;
+  const top = y - w.y;
+  const bottom = w.y + w.h - y;
+  const min = Math.min(left, right, top, bottom);
+  if (min === left) return { x: w.x - PLAYER_RADIUS, y };
+  if (min === right) return { x: w.x + w.w + PLAYER_RADIUS, y };
+  if (min === top) return { x, y: w.y - PLAYER_RADIUS };
+  return { x, y: w.y + w.h + PLAYER_RADIUS };
 }
