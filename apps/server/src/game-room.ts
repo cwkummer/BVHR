@@ -18,7 +18,7 @@ import { drizzle, DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import migrations from "../drizzle-do/migrations/migrations";
 import { players, battles, pendingRewards, PlayerRow } from "./db/do-schema";
-import { parsePlayerIdentityHeader, type PlayerIdentity } from "./player-identity";
+import { parseCombatStats, parsePlayerIdentityHeader, type CombatStats, type PlayerIdentity } from "./player-identity";
 import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "../../../shared/shard-config";
 import { BUILDINGS, stepMovement } from "../../../shared/map-zones";
 import type { ClientMessage, ServerMessage, BattleAction, BattleState, PlayerSnapshot } from "../../../shared/protocol";
@@ -47,6 +47,8 @@ type LivePlayer = PlayerRow & {
   lastTokenRefill: number;
   /** True after entering a zone until a battle ends; see `pickEncounterPairs`. */
   zoneArmed: boolean;
+  /** True while combat stats are being read from D1 for an imminent battle; blocks movement and re-matching. */
+  encounterPending: boolean;
 };
 
 const MAX_MSGS_PER_SEC = 30;
@@ -131,7 +133,8 @@ export class GameRoom extends DurableObject<Env> {
             dirty: false,
             msgTokens: MAX_MSGS_PER_SEC,
             lastTokenRefill: now,
-            zoneArmed: false
+            zoneArmed: false,
+            encounterPending: false
           });
         }
       });
@@ -159,6 +162,19 @@ export class GameRoom extends DurableObject<Env> {
       return Response.json({ error: "Missing or invalid player profile header" }, { status: 400 });
     }
 
+    // Read combat stats from D1 before touching any room state: the await lets other events interleave,
+    // so the capacity check and player creation below must run after it, synchronously.
+    let stats: CombatStats | undefined;
+    try {
+      stats = (await this.loadCombatStats([profile.id])).get(profile.id);
+    } catch (err) {
+      console.error("Failed to load player stats from D1:", err);
+      return Response.json({ error: "Player stats are temporarily unavailable" }, { status: 503 });
+    }
+    if (!stats) {
+      return Response.json({ error: "Player not found" }, { status: 404 });
+    }
+
     const existingPlayer = this.state.get(profile.id);
     // Reject brand-new joins once the shard reaches ROOM_HARD_CAP; allow existing players to reconnect.
     if (!existingPlayer && this.getCurrentOccupancy() >= ROOM_HARD_CAP) {
@@ -174,7 +190,7 @@ export class GameRoom extends DurableObject<Env> {
 
     this.closeSupersededSockets(profile.id, server);
 
-    const { player, isNewJoin } = this.hydrateOrCreatePlayer(profile);
+    const { player, isNewJoin } = this.hydrateOrCreatePlayer(profile, stats);
     this.sendInitialSync(server, profile.id, player, isNewJoin);
 
     return new Response(null, { status: 101, webSocket: client });
@@ -203,6 +219,23 @@ export class GameRoom extends DurableObject<Env> {
       softCap: ROOM_SOFT_CAP,
       hardCap: ROOM_HARD_CAP
     });
+  }
+
+  /**
+   * Reads current `maxHp`/`attack`/`defense` for each user from D1 in a single batch. Users that are
+   * missing or hold invalid values are absent from the result.
+   */
+  private async loadCombatStats(userIds: string[]): Promise<Map<string, CombatStats>> {
+    const statements = userIds.map((id) =>
+      this.env.DB.prepare("SELECT max_hp AS maxHp, attack, defense FROM users WHERE id = ?").bind(id)
+    );
+    const results = await this.env.DB.batch<Record<string, unknown>>(statements);
+    const out = new Map<string, CombatStats>();
+    results.forEach((result, i) => {
+      const stats = parseCombatStats(result.results[0]);
+      if (stats) out.set(userIds[i], stats);
+    });
+    return out;
   }
 
   /**
@@ -235,7 +268,7 @@ export class GameRoom extends DurableObject<Env> {
    * Re-syncs an existing `LivePlayer` on reconnect (resetting movement/dirty state and refreshing
    * D1 stats when outside combat) or inserts and registers a brand-new player row.
    */
-  private hydrateOrCreatePlayer(profile: PlayerIdentity): { player: LivePlayer; isNewJoin: boolean } {
+  private hydrateOrCreatePlayer(profile: PlayerIdentity, stats: CombatStats): { player: LivePlayer; isNewJoin: boolean } {
     let player = this.state.get(profile.id);
     const isNewJoin = !player;
 
@@ -248,10 +281,10 @@ export class GameRoom extends DurableObject<Env> {
       // Sync username and stats from D1 when reconnecting outside of an active battle.
       if (!player.battleId) {
         player.username = profile.username;
-        player.maxHp = profile.maxHp;
-        player.hp = Math.min(player.hp, profile.maxHp);
-        player.attack = profile.attack;
-        player.defense = profile.defense;
+        player.maxHp = stats.maxHp;
+        player.hp = Math.min(player.hp, stats.maxHp);
+        player.attack = stats.attack;
+        player.defense = stats.defense;
         this.db
           .update(players)
           .set({
@@ -272,10 +305,10 @@ export class GameRoom extends DurableObject<Env> {
       username: profile.username,
       x: 120,
       y: 120,
-      hp: profile.maxHp,
-      maxHp: profile.maxHp,
-      attack: profile.attack,
-      defense: profile.defense,
+      hp: stats.maxHp,
+      maxHp: stats.maxHp,
+      attack: stats.attack,
+      defense: stats.defense,
       currentZoneId: null,
       battleId: null,
       battleCooldownUntil: 0
@@ -288,7 +321,8 @@ export class GameRoom extends DurableObject<Env> {
       dirty: false,
       msgTokens: MAX_MSGS_PER_SEC,
       lastTokenRefill: Date.now(),
-      zoneArmed: false
+      zoneArmed: false,
+      encounterPending: false
     };
     this.state.set(profile.id, player);
     return { player, isNewJoin };
@@ -401,7 +435,7 @@ export class GameRoom extends DurableObject<Env> {
       p.msgTokens -= 1;
     }
 
-    if (msg.type === "WASD" && !p.battleId) {
+    if (msg.type === "WASD" && !p.battleId && !p.encounterPending) {
       const rawDx = Number(msg.dx);
       const rawDy = Number(msg.dy);
       p.dx = (Number.isFinite(rawDx) ? Math.sign(rawDx) : 0) as -1 | 0 | 1;
@@ -451,7 +485,7 @@ export class GameRoom extends DurableObject<Env> {
     const movedPlayers: Array<{ id: string; x: number; y: number; currentZoneId: string | null }> = [];
 
     for (const p of this.state.values()) {
-      if (p.battleId || (p.dx === 0 && p.dy === 0)) continue;
+      if (p.battleId || p.encounterPending || (p.dx === 0 && p.dy === 0)) continue;
       anyoneMoving = true;
       p.dirty = true;
 
@@ -471,10 +505,8 @@ export class GameRoom extends DurableObject<Env> {
       }
     }
 
-    const needsAlarmSync = this.startDueEncounters(now);
-    if (needsAlarmSync) {
-      await this.syncNextAlarm();
-    }
+    // Not awaited: reading stats from D1 must not delay this tick's position broadcast.
+    void this.startDueEncounters(now);
 
     const flushNow = Date.now();
 
@@ -541,18 +573,65 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   /**
-   * Starts every currently due zone encounter (see `pickEncounterPairs`) and returns whether any began.
+   * Begins every currently due zone encounter (see `pickEncounterPairs`). Matched players are frozen and
+   * flagged pending synchronously, then each battle starts once fresh combat stats have been read from
+   * D1. Never rejects; failures are logged.
    */
-  private startDueEncounters(now: number): boolean {
-    const pairs = pickEncounterPairs(this.state.values(), now);
-    for (const { zoneId, first, second } of pairs) {
-      first.dx = 0;
-      first.dy = 0;
-      second.dx = 0;
-      second.dy = 0;
-      this.startEncounterSync(first, second, zoneId);
+  private async startDueEncounters(now: number): Promise<void> {
+    const candidates = Array.from(this.state.values()).filter((p) => !p.encounterPending);
+    const tasks = pickEncounterPairs(candidates, now).map(({ zoneId, first, second }) => {
+      for (const p of [first, second]) {
+        p.dx = 0;
+        p.dy = 0;
+        p.encounterPending = true;
+      }
+      return this.beginEncounter(first, second, zoneId);
+    });
+    const settled = await Promise.allSettled(tasks);
+    for (const r of settled) {
+      if (r.status === "rejected") console.error("Failed to begin encounter:", r.reason);
     }
-    return pairs.length > 0;
+  }
+
+  /**
+   * Refreshes both players' combat stats from D1 (falling back to the stats from join if D1 is
+   * unavailable, so an outage never blocks combat), re-checks that the pair is still eligible after the
+   * await, then starts the battle at full HP.
+   */
+  private async beginEncounter(first: LivePlayer, second: LivePlayer, zoneId: string): Promise<void> {
+    try {
+      try {
+        const fresh = await this.loadCombatStats([first.id, second.id]);
+        for (const p of [first, second]) {
+          const stats = fresh.get(p.id);
+          if (stats) {
+            p.maxHp = stats.maxHp;
+            p.attack = stats.attack;
+            p.defense = stats.defense;
+          }
+        }
+      } catch (err) {
+        console.warn("Battle-start stat refresh failed; using stats from join:", err);
+      }
+
+      const now = Date.now();
+      const stillEligible = [first, second].every(
+        (p) =>
+          this.state.get(p.id) === p &&
+          !p.battleId &&
+          p.currentZoneId === zoneId &&
+          now >= p.battleCooldownUntil
+      );
+      if (!stillEligible) return;
+
+      first.hp = first.maxHp;
+      second.hp = second.maxHp;
+      this.startEncounterSync(first, second, zoneId);
+      await this.syncNextAlarm();
+    } finally {
+      first.encounterPending = false;
+      second.encounterPending = false;
+    }
   }
 
   /**
@@ -581,8 +660,14 @@ export class GameRoom extends DurableObject<Env> {
 
     this.ctx.storage.transactionSync(() => {
       this.db.insert(battles).values(battle).run();
-      this.db.update(players).set({ battleId }).where(eq(players.id, p1.id)).run();
-      this.db.update(players).set({ battleId }).where(eq(players.id, p2.id)).run();
+      for (const p of [p1, p2]) {
+        // Persist the stats just read from D1 together with the battle assignment.
+        this.db
+          .update(players)
+          .set({ battleId, maxHp: p.maxHp, hp: p.hp, attack: p.attack, defense: p.defense })
+          .where(eq(players.id, p.id))
+          .run();
+      }
     });
 
     this.sendToPlayers([p1.id, p2.id], {
@@ -1038,7 +1123,7 @@ export class GameRoom extends DurableObject<Env> {
 
     await this.flushPendingRewards(Date.now());
     this.pruneDisconnectedPlayers(Array.from(participantIds));
-    this.startDueEncounters(Date.now());
+    await this.startDueEncounters(Date.now());
     await this.syncNextAlarm();
   }
 

@@ -2,7 +2,7 @@
  * Unit tests covering core shared physics, combat formulas, timeout forfeiture rules,
  * JWT scope isolation between session tokens and WebSocket tickets, and JWKS cache TTL clamping.
  */
-import { parsePlayerIdentity, parsePlayerIdentityHeader } from "../player-identity";
+import { parseCombatStats, parsePlayerIdentity, parsePlayerIdentityHeader } from "../player-identity";
 import { canReconnectToShard, pickFirstOpenShard } from "../shard-routing";
 import { pickEncounterPairs, type EncounterCandidate } from "../encounters";
 import { describe, expect, test } from "bun:test";
@@ -207,13 +207,13 @@ describe("fill-first shard selection", () => {
 });
 
 describe("player identity header validation", () => {
-  const ok = { id: "u1", username: "Alice", maxHp: 100, attack: 15, defense: 6 };
+  const ok = { id: "u1", username: "Alice" };
 
   test("accepts a valid identity and drops unknown fields", () => {
-    expect(parsePlayerIdentity({ ...ok, email: "a@x.com", googleSub: "g" })).toEqual(ok);
+    expect(parsePlayerIdentity({ ...ok, email: "a@x.com", googleSub: "g", maxHp: 999 })).toEqual(ok);
   });
 
-  test("rejects missing, mistyped and out-of-range fields", () => {
+  test("rejects missing, mistyped and oversized fields", () => {
     expect(parsePlayerIdentity(null)).toBeNull();
     expect(parsePlayerIdentity("x")).toBeNull();
     expect(parsePlayerIdentity({ ...ok, id: "" })).toBeNull();
@@ -221,19 +221,33 @@ describe("player identity header validation", () => {
     expect(parsePlayerIdentity({ ...ok, username: "" })).toBeNull();
     expect(parsePlayerIdentity({ ...ok, username: "x".repeat(33) })).toBeNull();
     expect(parsePlayerIdentity({ ...ok, username: 5 })).toBeNull();
-    expect(parsePlayerIdentity({ ...ok, maxHp: 0 })).toBeNull();
-    expect(parsePlayerIdentity({ ...ok, maxHp: 1e9 })).toBeNull();
-    expect(parsePlayerIdentity({ ...ok, attack: -1 })).toBeNull();
-    expect(parsePlayerIdentity({ ...ok, attack: 1.5 })).toBeNull();
-    expect(parsePlayerIdentity({ ...ok, defense: Number.NaN })).toBeNull();
-    expect(parsePlayerIdentity({ ...ok, defense: "6" })).toBeNull();
-    const { maxHp, ...missing } = ok;
-    expect(parsePlayerIdentity(missing)).toBeNull();
+    expect(parsePlayerIdentity({ username: "Alice" })).toBeNull();
   });
 
   test("header parsing handles absent, malformed and valid values", () => {
     expect(parsePlayerIdentityHeader(null)).toBeNull();
     expect(parsePlayerIdentityHeader("{not json")).toBeNull();
     expect(parsePlayerIdentityHeader(JSON.stringify(ok))).toEqual(ok);
+  });
+});
+
+describe("combat stats rows from D1", () => {
+  const ok = { maxHp: 100, attack: 15, defense: 6 };
+
+  test("accepts a valid row and drops unknown columns", () => {
+    expect(parseCombatStats({ ...ok, email: "a@x.com" })).toEqual(ok);
+  });
+
+  test("rejects absent rows and impossible values", () => {
+    expect(parseCombatStats(undefined)).toBeNull();
+    expect(parseCombatStats(null)).toBeNull();
+    expect(parseCombatStats({ ...ok, maxHp: 0 })).toBeNull();
+    expect(parseCombatStats({ ...ok, maxHp: 1e9 })).toBeNull();
+    expect(parseCombatStats({ ...ok, attack: -1 })).toBeNull();
+    expect(parseCombatStats({ ...ok, attack: 1.5 })).toBeNull();
+    expect(parseCombatStats({ ...ok, defense: Number.NaN })).toBeNull();
+    expect(parseCombatStats({ ...ok, defense: "6" })).toBeNull();
+    const { maxHp, ...missing } = ok;
+    expect(parseCombatStats(missing)).toBeNull();
   });
 });
