@@ -378,7 +378,7 @@ export class GameRoom extends DurableObject<Env> {
     const dt = tickDeltaSeconds(now, this.lastTickAt);
     this.lastTickAt = now;
 
-    const { anyoneMoving, moved } = advanceMovement(this.state.values(), dt);
+    const { anyoneMoving, moved } = advanceMovement(this.state.values(), dt, now);
 
     // Not awaited: reading stats from D1 must not delay this tick's position broadcast.
     void this.startDueEncounters(now);

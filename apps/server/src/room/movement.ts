@@ -6,7 +6,7 @@ import type { LivePlayer } from "./live-player";
 
 type Movable = Pick<
   LivePlayer,
-  "id" | "x" | "y" | "dx" | "dy" | "dirty" | "battleId" | "encounterPending" | "currentZoneId" | "zoneArmed" | "startFailureNotified"
+  "id" | "x" | "y" | "dx" | "dy" | "dirty" | "battleId" | "encounterPending" | "currentZoneId" | "zoneArmed" | "zoneEnteredAt" | "startFailureNotified"
 >;
 
 export type MovedPlayer = { id: string; x: number; y: number; currentZoneId: string | null };
@@ -43,11 +43,13 @@ export function anyPlayerMoving(players: Iterable<Pick<LivePlayer, "battleId" | 
 /**
  * Advances every moving, non-battle, non-pending player by `dt` seconds, marking them dirty and
  * updating their zone. Entering a different zone arms the player for an encounter (only if it is a
- * building) and resets their start-failure notice. Mutates `players`; returns who moved.
+ * building), records when they entered, and resets their start-failure notice. Mutates `players`;
+ * returns who moved.
  */
 export function advanceMovement(
   players: Iterable<Movable>,
-  dt: number
+  dt: number,
+  now: number
 ): { anyoneMoving: boolean; moved: MovedPlayer[] } {
   let anyoneMoving = false;
   const moved: MovedPlayer[] = [];
@@ -67,6 +69,7 @@ export function advanceMovement(
     if (p.currentZoneId !== newZoneId) {
       p.currentZoneId = newZoneId;
       p.zoneArmed = newZoneId !== null;
+      p.zoneEnteredAt = now;
       p.startFailureNotified = false;
     }
   }

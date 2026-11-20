@@ -1,0 +1,28 @@
+# Integration tests
+
+These tests drive a **real** Worker, `GameRoom` Durable Object and local D1 over HTTP and WebSockets, the
+same way the browser client does. Each test file boots its own `wrangler dev` against a throwaway database
+(`support/server.ts`), so it starts from an empty room, never touches your `.wrangler` dev state, and needs
+no network access, secrets or Google account (session tokens are signed with a test secret).
+
+```
+bun run test:integration                                   # everything (about 3 minutes)
+cd apps/server && bun test ./integration/capacity.integration.test.ts --timeout 120000   # one file
+```
+
+| File | Covers |
+|---|---|
+| `matchmaking` | auth failures, fill-first shards, roster/join/leave messages, shard isolation, reconnecting to the same room, second-tab takeover, forged identity header |
+| `battle` | zone encounters and who leads, fresh D1 stats in combat, turn rules, HEAL/FLEE, exactly-once rewards, rematch rules |
+| `stats-failure` | invalid D1 data: no battle, one notice per player, automatic recovery, refused joins |
+| `timeouts` | AFK auto-attack, forfeit after two missed turns, rewards for the other player, resuming a battle after a drop |
+| `capacity` | rollover at the soft cap (40), reconnects and new joins at the hard cap (50), `409`/`503` responses |
+
+`support/client.ts` has a small scripted `GameClient` (join, walk into a building, autoplay turns, wait for a
+message) that new tests can reuse.
+
+Not covered: a real D1 outage (the local D1 cannot be made to fail on demand), reward retry after such an
+outage, and real Google sign-in.
+
+Note: Bun's WebSocket client reports a server-initiated close only after about 10 seconds (Chromium: about
+2 seconds), so close-code assertions wait longer than a browser would.

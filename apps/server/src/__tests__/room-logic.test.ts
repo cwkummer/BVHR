@@ -34,6 +34,7 @@ describe("movement", () => {
     encounterPending: false,
     currentZoneId: null as string | null,
     zoneArmed: false,
+    zoneEnteredAt: 0,
     startFailureNotified: false,
     ...over
   });
@@ -55,7 +56,7 @@ describe("movement", () => {
 
   test("a moving player advances, becomes dirty and is reported", () => {
     const p = mk({ dx: 1 });
-    const { anyoneMoving, moved } = advanceMovement([p], 0.1);
+    const { anyoneMoving, moved } = advanceMovement([p], 0.1, 5000);
     expect(anyoneMoving).toBe(true);
     expect(p.x).toBeGreaterThan(100);
     expect(p.dirty).toBe(true);
@@ -64,7 +65,7 @@ describe("movement", () => {
 
   test("idle, in-battle and encounter-pending players do not move", () => {
     const players = [mk({ id: "idle" }), mk({ id: "b", dx: 1, battleId: "x" }), mk({ id: "e", dx: 1, encounterPending: true })];
-    const { anyoneMoving, moved } = advanceMovement(players, 0.1);
+    const { anyoneMoving, moved } = advanceMovement(players, 0.1, 0);
     expect(anyoneMoving).toBe(false);
     expect(moved).toHaveLength(0);
     expect(players.every((p) => p.x === 100 && !p.dirty)).toBe(true);
@@ -73,14 +74,15 @@ describe("movement", () => {
   test("entering a building arms the player and clears the start-failure notice; leaving disarms", () => {
     const t = BUILDINGS.find((b) => b.id === "tavern")!;
     const p = mk({ x: t.x - 1, y: t.y + 10, dx: 1, startFailureNotified: true });
-    advanceMovement([p], 0.1);
+    advanceMovement([p], 0.1, 5000);
     expect(p.currentZoneId).toBe("tavern");
     expect(p.zoneArmed).toBe(true);
+    expect(p.zoneEnteredAt).toBe(5000);
     expect(p.startFailureNotified).toBe(false);
 
     p.dx = -1;
     p.x = t.x + 1;
-    advanceMovement([p], 1);
+    advanceMovement([p], 1, 6000);
     expect(p.currentZoneId).toBeNull();
     expect(p.zoneArmed).toBe(false);
   });
@@ -88,7 +90,7 @@ describe("movement", () => {
   test("staying in the same zone does not re-arm", () => {
     const t = BUILDINGS.find((b) => b.id === "tavern")!;
     const p = mk({ x: t.x + 50, y: t.y + 50, dx: 0, dy: 1, currentZoneId: "tavern", zoneArmed: false });
-    advanceMovement([p], 0.05);
+    advanceMovement([p], 0.05, 7000);
     expect(p.zoneArmed).toBe(false);
   });
 

@@ -88,6 +88,7 @@ describe("encounter matching", () => {
     battleId: null,
     battleCooldownUntil: 0,
     zoneArmed: false,
+    zoneEnteredAt: 0,
     ...over
   });
 
@@ -95,6 +96,17 @@ describe("encounter matching", () => {
     const [pair] = pickEncounterPairs([mk("idle"), mk("entrant", { zoneArmed: true })], 1000);
     expect(pair.first.id).toBe("entrant");
     expect(pair.second.id).toBe("idle");
+  });
+
+  test("when both players are armed, the one who entered most recently leads", () => {
+    const early = mk("early", { zoneArmed: true, zoneEnteredAt: 100 });
+    const late = mk("late", { zoneArmed: true, zoneEnteredAt: 900 });
+    // Order in the list must not matter.
+    for (const list of [[early, late], [late, early]]) {
+      const [pair] = pickEncounterPairs(list, 1000);
+      expect(pair.first.id).toBe("late");
+      expect(pair.second.id).toBe("early");
+    }
   });
 
   test("two disarmed players standing together do not rematch", () => {

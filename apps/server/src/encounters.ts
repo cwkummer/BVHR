@@ -12,12 +12,14 @@ export type EncounterCandidate = {
   battleId: string | null;
   battleCooldownUntil: number;
   zoneArmed: boolean;
+  /** When the player last entered their current zone (epoch ms); the most recent entrant leads the fight. */
+  zoneEnteredAt: number;
 };
 
 export type EncounterPair<T extends EncounterCandidate> = { zoneId: string; first: T; second: T };
 
 /**
- * Returns disjoint pairs to start battles for. The armed player always takes the first turn.
+ * Returns disjoint pairs to start battles for. Among armed players, the one who entered the zone most recently (the "challenger") takes the first turn.
  */
 export function pickEncounterPairs<T extends EncounterCandidate>(
   players: Iterable<T>,
@@ -35,7 +37,10 @@ export function pickEncounterPairs<T extends EncounterCandidate>(
   for (const [zoneId, occupants] of byZone) {
     const remaining = [...occupants];
     while (remaining.length >= 2) {
-      const firstIdx = remaining.findIndex((p) => p.zoneArmed);
+      let firstIdx = -1;
+      remaining.forEach((p, i) => {
+        if (p.zoneArmed && (firstIdx === -1 || p.zoneEnteredAt > remaining[firstIdx].zoneEnteredAt)) firstIdx = i;
+      });
       if (firstIdx === -1) break;
       const [first] = remaining.splice(firstIdx, 1);
       const [second] = remaining.splice(0, 1);

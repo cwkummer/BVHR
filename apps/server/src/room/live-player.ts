@@ -13,6 +13,8 @@ export type LivePlayer = PlayerRow & {
   lastTokenRefill: number;
   /** True after entering a zone until a battle ends; see `pickEncounterPairs`. */
   zoneArmed: boolean;
+  /** When the player last entered their current zone (epoch ms); 0 if never. */
+  zoneEnteredAt: number;
   /** True while combat stats are being read from D1 for an imminent battle; blocks movement and re-matching. */
   encounterPending: boolean;
   /** True once this player has been told a battle could not start; avoids repeating it on every retry. */
@@ -31,6 +33,7 @@ export function createLivePlayer(row: PlayerRow, now: number): LivePlayer {
     msgTokens: MAX_MSGS_PER_SEC,
     lastTokenRefill: now,
     zoneArmed: false,
+    zoneEnteredAt: 0,
     encounterPending: false,
     startFailureNotified: false
   };
