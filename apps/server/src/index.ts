@@ -4,7 +4,7 @@
  *  - Health check (`/api/health`) and authenticated profile lookup (`/api/me`).
  *  - Google OAuth sign-in (`/api/auth/google`) with unique username assignment (`Hero-xxxxxxxx` fallback).
  *  - Regional shard selection, resume lookup, and WebSocket ticket issuance (`/api/join`, `/api/ws-ticket`).
- *  - WebSocket upgrade routing (`/ws/:roomId`) with ticket verification and profile forwarding (`X-Player-Data`)
+ *  - WebSocket upgrade routing (`/ws/:roomId`) with ticket verification and forwarding of the verified user id (`X-Player-Id`)
  *    to the target `GameRoom` Durable Object shard.
  */
 import { Hono, type Context } from "hono";
@@ -12,7 +12,6 @@ import { drizzle } from "drizzle-orm/d1";
 import { eq } from "drizzle-orm";
 import { users, type UserProfile } from "./db/d1-schema";
 import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "shared/shard-config";
-import { toPlayerIdentity } from "./player-identity";
 import { d1UserStore, findOrCreateUser, type GoogleUser } from "./user-provisioning";
 import { requireGoogleClientId, requireJwtSecret } from "./config";
 import { canReconnectToShard, pickFirstOpenShard, type ShardStats } from "./shard-routing";
@@ -478,7 +477,7 @@ const app = baseApp
     return c.json(result.body, 503);
   })
   // Upgrades an authenticated WebSocket request after validating the room-bound ticket and
-  // forwarding the player's projected profile via X-Player-Data to the GameRoom Durable Object.
+  // forwarding the verified user id via X-Player-Id to the GameRoom Durable Object.
   .get("/ws/:roomId", async (c) => {
     const secret = requireJwtSecret(c.env);
     if (c.req.header("Upgrade") !== "websocket") {
@@ -502,16 +501,12 @@ const app = baseApp
       return c.text("Invalid or expired WebSocket ticket", 401);
     }
 
-    const d1 = drizzle(c.env.DB);
-    const [profile] = await d1.select().from(users).where(eq(users.id, userId));
-    if (!profile) return c.text("Player not found", 404);
-
     const shardContinent = match[1] || continent;
     const stub = getRoomStub(c.env, regionalRoomId, shardContinent);
     const headers = new Headers(c.req.raw.headers);
-    // `set` replaces any client-supplied value, and only the minimal validated identity is forwarded
-    // (no email or Google id); the room re-validates it because the header is a trust boundary.
-    headers.set("X-Player-Data", JSON.stringify(toPlayerIdentity(profile)));
+    // `set` replaces any client-supplied value, and only the verified user id is forwarded. The room reads
+    // everything else about the player from D1 itself (and 404s if the user no longer exists).
+    headers.set("X-Player-Id", userId);
 
     const res = await stub.fetch(new Request(c.req.url, { headers }));
     if (res.status === 503) {

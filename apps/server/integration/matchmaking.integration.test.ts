@@ -43,11 +43,10 @@ describe("authentication", () => {
     expect(await upgradeStatus(server, "not-a-room", ticket)).toBe(400);
   });
 
-  test("a client-supplied X-Player-Data header cannot change who you are", async () => {
+  test("a client-supplied X-Player-Id header cannot change who you are", async () => {
     const res = await post(server, "/api/join", "a");
-    const forged = JSON.stringify({ id: "admin", username: "HACKER" });
     const client = track(new GameClient(server, "a"));
-    await client.connect(res.json.roomId, res.json.wsTicket, { "X-Player-Data": forged });
+    await client.connect(res.json.roomId, res.json.wsTicket, { "X-Player-Id": "b", "X-Player-Data": '{"id":"b"}' });
     expect(client.selfId).toBe("a");
     const me = client.all("SYNC_STATE")[0].players.find((p) => p.id === "a");
     expect(me?.username).toBe("A");

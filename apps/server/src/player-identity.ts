@@ -1,13 +1,12 @@
 /**
- * Two small trust-boundary types for `GameRoom`:
- *  - `PlayerIdentity`: who is connecting (`id`, `username`), forwarded by the Worker in the `X-Player-Data`
- *    header after it has verified the ticket. Deliberately excludes email, Google id and combat stats.
- *  - `CombatStats`: `maxHp`/`attack`/`defense`, which the room reads from D1 itself when a player joins
- *    and again at battle start, so combat always uses the account's current values.
- * Both are range-checked before use.
+ * Trust-boundary types for `GameRoom`:
+ *  - The Worker forwards only the verified user id, in the `X-Player-Id` header, after it has checked the
+ *    ticket. Nothing else about the player crosses that boundary.
+ *  - The room then reads that user's `username` and combat stats from D1 itself, in one query, when the
+ *    player joins (`parsePlayerRecord`), and reads stats again at battle start (`parseCombatStats`), so
+ *    the room always uses the account's current values.
+ * Everything read from the header or from D1 is range-checked before use.
  */
-import type { UserProfile } from "./db/d1-schema";
-
 export type PlayerIdentity = {
   id: string;
   username: string;
@@ -23,38 +22,15 @@ const MAX_ID_LENGTH = 64;
 const MAX_USERNAME_LENGTH = 32;
 const MAX_STAT = 1_000_000;
 
-/**
- * Projects a D1 user row down to the identity the room needs.
- */
-export function toPlayerIdentity(profile: UserProfile): PlayerIdentity {
-  return { id: profile.id, username: profile.username };
-}
-
 const isIntInRange = (v: unknown, min: number, max: number): v is number =>
   typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
 
 /**
- * Validates untrusted JSON into a `PlayerIdentity`, returning only the known fields (extras are
- * dropped) or null if any field is missing, mistyped or out of range.
+ * Validates the raw `X-Player-Id` header value; null if it is missing, empty or too long.
  */
-export function parsePlayerIdentity(raw: unknown): PlayerIdentity | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const { id, username } = raw as Record<string, unknown>;
-  if (typeof id !== "string" || id.length < 1 || id.length > MAX_ID_LENGTH) return null;
-  if (typeof username !== "string" || username.length < 1 || username.length > MAX_USERNAME_LENGTH) return null;
-  return { id, username };
-}
-
-/**
- * Parses the raw `X-Player-Data` header value; null for a missing header, bad JSON or invalid fields.
- */
-export function parsePlayerIdentityHeader(rawHeader: string | null): PlayerIdentity | null {
-  if (!rawHeader) return null;
-  try {
-    return parsePlayerIdentity(JSON.parse(rawHeader));
-  } catch {
-    return null;
-  }
+export function parsePlayerIdHeader(rawHeader: string | null): string | null {
+  if (!rawHeader || rawHeader.length > MAX_ID_LENGTH) return null;
+  return rawHeader;
 }
 
 /**
@@ -68,4 +44,19 @@ export function parseCombatStats(row: unknown): CombatStats | null {
   if (!isIntInRange(attack, 0, MAX_STAT)) return null;
   if (!isIntInRange(defense, 0, MAX_STAT)) return null;
   return { maxHp, attack, defense };
+}
+
+/**
+ * Validates a D1 `users` row (selected as `username`, `maxHp`, `attack`, `defense`) for user `id` into the
+ * identity and combat stats the room needs, or null if the row is absent or holds an impossible value.
+ */
+export function parsePlayerRecord(
+  id: string,
+  row: unknown
+): { identity: PlayerIdentity; stats: CombatStats } | null {
+  const stats = parseCombatStats(row);
+  if (!stats) return null;
+  const { username } = row as Record<string, unknown>;
+  if (typeof username !== "string" || username.length < 1 || username.length > MAX_USERNAME_LENGTH) return null;
+  return { identity: { id, username }, stats };
 }

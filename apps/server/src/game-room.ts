@@ -25,14 +25,14 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import { and, eq, lte, min } from "drizzle-orm";
 import migrations from "../drizzle-do/migrations/migrations";
 import { players, battles, type PlayerRow } from "./db/do-schema";
-import { parsePlayerIdentityHeader, type CombatStats, type PlayerIdentity } from "./player-identity";
+import { parsePlayerIdHeader, type CombatStats, type PlayerIdentity } from "./player-identity";
 import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "shared/shard-config";
 import type { ClientMessage, ServerMessage, BattleAction, BattleState } from "shared/protocol";
 import type { Env } from "./index";
 import { BATTLE_REWARD_GOLD, BATTLE_REWARD_XP, POST_BATTLE_IMMUNITY_MS, TURN_TIMEOUT_MS } from "./combat";
 import { pickEncounterPairs } from "./encounters";
 import { AlarmScheduler, earliestCooldownExpiry, earliestTime } from "./room/alarm-schedule";
-import { loadCombatStats } from "./room/combat-stats";
+import { loadCombatStats, loadPlayerRecord } from "./room/combat-stats";
 import { KeyedSerialQueue } from "./room/keyed-queue";
 import { createLivePlayer, type LivePlayer } from "./room/live-player";
 import { advanceMovement, anyPlayerMoving, tickDeltaSeconds, toDirection } from "./room/movement";
@@ -100,23 +100,25 @@ export class GameRoom extends DurableObject<Env> {
       return Response.json({ error: "Expected WebSocket upgrade" }, { status: 426 });
     }
 
-    const profile = parsePlayerIdentityHeader(request.headers.get("X-Player-Data"));
-    if (!profile) {
-      return Response.json({ error: "Missing or invalid player profile header" }, { status: 400 });
+    const playerId = parsePlayerIdHeader(request.headers.get("X-Player-Id"));
+    if (!playerId) {
+      return Response.json({ error: "Missing or invalid player id header" }, { status: 400 });
     }
 
-    // Read combat stats from D1 before touching any room state: the await lets other events interleave,
-    // so the capacity check and player creation below must run after it, synchronously.
-    let stats: CombatStats | undefined;
+    // Read the player's username and combat stats from D1 (one query) before touching any room state: the
+    // await lets other events interleave, so the capacity check and player creation below must run after
+    // it, synchronously.
+    let record: Awaited<ReturnType<typeof loadPlayerRecord>>;
     try {
-      stats = (await loadCombatStats(this.env.DB, [profile.id])).get(profile.id);
+      record = await loadPlayerRecord(this.env.DB, playerId);
     } catch (err) {
-      console.error("Failed to load player stats from D1:", err);
+      console.error("Failed to load player from D1:", err);
       return Response.json({ error: "Player stats are temporarily unavailable" }, { status: 503 });
     }
-    if (!stats) {
+    if (!record) {
       return Response.json({ error: "Player not found" }, { status: 404 });
     }
+    const { identity: profile, stats } = record;
 
     const existingPlayer = this.state.get(profile.id);
     // Reject brand-new joins once the shard reaches ROOM_HARD_CAP; allow existing players to reconnect.
