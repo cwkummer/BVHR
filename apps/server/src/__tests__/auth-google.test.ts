@@ -192,15 +192,24 @@ describe("session tokens and WebSocket tickets", () => {
     expect(await verifySessionToken(`Bearer ${old}`, SECRET)).toBeNull();
   });
 
-  test("session tokens last 7 days; tickets last 60 seconds", async () => {
+  test("session tokens last 7 days; tickets last 20 seconds", async () => {
     const claims = (t: string) => JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
     const now = nowSec();
     const session = claims(await mintSessionToken(SECRET, "u1", "A"));
     expect(session.exp - now).toBeGreaterThan(7 * 24 * 3600 - 5);
     expect(session.exp - now).toBeLessThanOrEqual(7 * 24 * 3600);
     const ticket = claims(await mintWsTicket(SECRET, "u1", "na-overworld-1"));
-    expect(ticket.exp - now).toBeGreaterThan(55);
-    expect(ticket.exp - now).toBeLessThanOrEqual(60);
+    expect(ticket.exp - now).toBeGreaterThan(15);
+    expect(ticket.exp - now).toBeLessThanOrEqual(20);
+  });
+
+  test("a ticket is accepted for its 20 seconds and rejected after", async () => {
+    const minted = Date.now();
+    const at = async (ageSec: number) => verifyWsTicket(await mintWsTicket(SECRET, "u1", "na-overworld-1", minted - ageSec * 1000), SECRET, "na-overworld-1");
+    expect(await at(0)).toBe("u1");
+    expect(await at(15)).toBe("u1");
+    expect(await at(25)).toBeNull();
+    expect(await at(60)).toBeNull();
   });
 
   test("a ticket only works for its own room and its own scope, and a session token is not a ticket", async () => {

@@ -39,7 +39,7 @@ describe("shard capacity", () => {
     expect(joins[ROOM_SOFT_CAP].roomId).toBe(SHARD_2);
     expect(joins[ROOM_SOFT_CAP - 1].count).toBe(ROOM_SOFT_CAP);
 
-    // Seat all of them for real (tickets are valid for a minute).
+    // Seat all of them for real straight away (tickets are only valid for 20 seconds).
     await Promise.all(
       joins.map(async (j) => {
         const c = new GameClient(server, j.userId);

@@ -42,7 +42,8 @@ const JWKS_MIN_REFRESH_INTERVAL_MS = 30_000;
 // After a failed refresh, keep serving the keys we have and do not retry for this long.
 const JWKS_RETRY_AFTER_FAILURE_MS = 30_000;
 const JWT_CLOCK_SKEW_SEC = 60;
-const WS_TICKET_TTL_SEC = 60;
+// A ticket is used immediately after it is minted, and a reconnect mints a fresh one, so keep it short.
+const WS_TICKET_TTL_SEC = 20;
 const SESSION_TTL_SEC = 60 * 60 * 24 * 7;
 
 // Module-level JWKS key cache and single-flight fetch promise to avoid thundering herds.
@@ -288,7 +289,7 @@ export async function verifySessionToken(authHeader: string | undefined, secret:
 }
 
 /**
- * Mints a short-lived (60s) HS256 WebSocket upgrade ticket scoped to `scope: "ws"`
+ * Mints a short-lived (20s) HS256 WebSocket upgrade ticket scoped to `scope: "ws"`
  * and bound to a specific `roomId`.
  */
 export async function mintWsTicket(
