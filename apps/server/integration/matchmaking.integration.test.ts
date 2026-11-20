@@ -35,6 +35,18 @@ describe("authentication", () => {
     }
   });
 
+  test("the profile endpoint returns game data but not the e-mail address or Google id", async () => {
+    const res = await fetch(server.baseUrl + "/api/me", {
+      headers: { Authorization: `Bearer ${await server.token("a")}` }
+    });
+    expect(res.status).toBe(200);
+    const { profile } = (await res.json()) as { profile: Record<string, unknown> };
+    expect(profile).toMatchObject({ id: "a", username: "A", level: 1, maxHp: 100 });
+    expect(Object.keys(profile).sort()).toEqual(
+      ["attack", "defense", "gold", "id", "level", "maxHp", "username", "xp"]
+    );
+  });
+
   test("a WebSocket upgrade needs a valid ticket for that exact room", async () => {
     expect(await upgradeStatus(server, "na-overworld-1", "garbage")).toBe(401);
     const ticket = (await post(server, "/api/ws-ticket", "a", { roomId: "na-overworld-1" })).json.wsTicket;

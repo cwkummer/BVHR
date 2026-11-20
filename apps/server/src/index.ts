@@ -319,18 +319,18 @@ async function issueReconnectTicket(
 
 type PublicUserProfile = Pick<
   UserProfile,
-  "id" | "googleSub" | "username" | "email" | "level" | "xp" | "gold" | "maxHp" | "attack" | "defense"
+  "id" | "username" | "level" | "xp" | "gold" | "maxHp" | "attack" | "defense"
 >;
 
 /**
- * Projects a D1 `UserProfile` row into `PublicUserProfile` for API responses.
+ * Projects a D1 `UserProfile` row into `PublicUserProfile` for API responses. The e-mail address and Google
+ * account id are never sent to the client: it has no use for them, and keeping them server-side means a
+ * stolen session token cannot be used to read them back.
  */
 function toPublicProfile(profile: UserProfile): PublicUserProfile {
   return {
     id: profile.id,
-    googleSub: profile.googleSub,
     username: profile.username,
-    email: profile.email,
     level: profile.level,
     xp: profile.xp,
     gold: profile.gold,
