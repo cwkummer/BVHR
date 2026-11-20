@@ -54,6 +54,8 @@ export function useGameRoom(
   const [roster, setRoster] = useState<Record<string, PlayerSnapshot>>({});
   const [battle, setBattle] = useState<BattleState | null>(null);
   const [combatLog, setCombatLog] = useState<string[]>([]);
+  // Transient overworld notice (e.g. a battle could not start); cleared on battle start or after a delay.
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!fetchWsTicket || !roomId) {
@@ -74,6 +76,7 @@ export function useGameRoom(
     let reconnectTimer: ReturnType<typeof setTimeout>;
     let pingTimer: ReturnType<typeof setInterval>;
     let pongTimeout: ReturnType<typeof setTimeout> | undefined;
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
     let isUnmounted = false;
     let reconnectAttempt = 0;
     let openedOnce = false;
@@ -226,6 +229,8 @@ export function useGameRoom(
             setClockOffsetMs(msg.serverNow - Date.now());
             setBattle(msg.battle);
             setCombatLog([`Battle started in ${msg.battle.zoneId}!`]);
+            clearTimeout(noticeTimer);
+            setNotice(null);
             break;
 
           case "TURN_RESOLVED":
@@ -247,6 +252,12 @@ export function useGameRoom(
                 : null
             );
             setCombatLog((prev) => [...prev, msg.log]);
+            break;
+
+          case "BATTLE_START_FAILED":
+            setNotice("Couldn't start the battle: player data is temporarily unavailable. Retrying...");
+            clearTimeout(noticeTimer);
+            noticeTimer = setTimeout(() => setNotice(null), 8_000);
             break;
 
           case "BATTLE_ENDED":
@@ -294,6 +305,8 @@ export function useGameRoom(
       clearTimeout(reconnectTimer);
       clearInterval(pingTimer);
       clearTimeout(pongTimeout);
+      clearTimeout(noticeTimer);
+      setNotice(null);
       wsRef.current?.close();
       positionsRef.current.clear();
       setRoster({});
@@ -348,6 +361,7 @@ export function useGameRoom(
     roster,
     battle,
     combatLog,
+    notice,
     sendWASD,
     sendBattleAction,
     reconnectNow

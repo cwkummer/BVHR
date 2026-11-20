@@ -63,4 +63,6 @@ export type ServerMessage =
       hpPercentByPlayerId: Record<string, number>;
       log: string;
     }
+  // A battle could not start because valid player data could not be read; the server retries automatically.
+  | { type: "BATTLE_START_FAILED"; reason: "STATS_UNAVAILABLE"; retryInMs: number }
   | { type: "BATTLE_ENDED"; winnerId: string; participantIds: [string, string]; log: string };

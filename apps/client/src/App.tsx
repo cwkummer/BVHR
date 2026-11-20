@@ -347,6 +347,7 @@ export default function App() {
     roster,
     battle,
     combatLog,
+    notice,
     sendWASD,
     sendBattleAction,
     reconnectNow
@@ -425,6 +426,11 @@ export default function App() {
               <div>You: {activeUsername}</div>
               <div className="text-sky-300">Shard: {session.roomId}</div>
               <div className="text-slate-400 mt-1">Use WASD to walk into a yellow building with another player</div>
+              {notice && (
+                <div role="status" className="mt-1 text-amber-300">
+                  {notice}
+                </div>
+              )}
               <div className="mt-2 flex items-center gap-2">
                 {superseded && (
                   <button

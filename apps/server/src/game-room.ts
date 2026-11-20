@@ -49,6 +49,8 @@ type LivePlayer = PlayerRow & {
   zoneArmed: boolean;
   /** True while combat stats are being read from D1 for an imminent battle; blocks movement and re-matching. */
   encounterPending: boolean;
+  /** True once this player has been told a battle could not start; avoids repeating it on every retry. */
+  startFailureNotified: boolean;
 };
 
 const ENCOUNTER_RETRY_MS = 2_000;
@@ -137,7 +139,8 @@ export class GameRoom extends DurableObject<Env> {
             msgTokens: MAX_MSGS_PER_SEC,
             lastTokenRefill: now,
             zoneArmed: false,
-            encounterPending: false
+            encounterPending: false,
+            startFailureNotified: false
           });
         }
       });
@@ -325,7 +328,8 @@ export class GameRoom extends DurableObject<Env> {
       msgTokens: MAX_MSGS_PER_SEC,
       lastTokenRefill: Date.now(),
       zoneArmed: false,
-      encounterPending: false
+      encounterPending: false,
+      startFailureNotified: false
     };
     this.state.set(profile.id, player);
     return { player, isNewJoin };
@@ -505,6 +509,7 @@ export class GameRoom extends DurableObject<Env> {
 
         // Entering a building arms this player to trigger an encounter; matching runs after the loop.
         p.zoneArmed = newZoneId !== null;
+        p.startFailureNotified = false;
       }
     }
 
@@ -613,14 +618,14 @@ export class GameRoom extends DurableObject<Env> {
         fresh = await this.loadCombatStats([first.id, second.id]);
       } catch (err) {
         console.error("Battle not started: could not read stats from D1:", err);
-        await this.deferEncounterRetry();
+        await this.deferEncounterRetry([first, second]);
         return;
       }
       const firstStats = fresh.get(first.id);
       const secondStats = fresh.get(second.id);
       if (!firstStats || !secondStats) {
         console.error(`Battle not started: missing or invalid D1 stats for ${first.id} / ${second.id}`);
-        await this.deferEncounterRetry();
+        await this.deferEncounterRetry([first, second]);
         return;
       }
 
@@ -634,6 +639,8 @@ export class GameRoom extends DurableObject<Env> {
       );
       if (!stillEligible) return;
 
+      first.startFailureNotified = false;
+      second.startFailureNotified = false;
       Object.assign(first, firstStats, { hp: firstStats.maxHp });
       Object.assign(second, secondStats, { hp: secondStats.maxHp });
       this.startEncounterSync(first, second, zoneId);
@@ -645,10 +652,19 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   /**
-   * Backs off encounter matching and arms the alarm so the failed start is retried automatically.
+   * Backs off encounter matching, tells the affected players (once per failure streak, not on every
+   * retry) that the battle could not start, and arms the alarm so the start is retried automatically.
    */
-  private async deferEncounterRetry(): Promise<void> {
+  private async deferEncounterRetry(affected: LivePlayer[]): Promise<void> {
     this.encounterRetryAt = Date.now() + ENCOUNTER_RETRY_MS;
+    const toNotify = affected.filter((p) => !p.startFailureNotified);
+    if (toNotify.length > 0) {
+      for (const p of toNotify) p.startFailureNotified = true;
+      this.sendToPlayers(
+        toNotify.map((p) => p.id),
+        { type: "BATTLE_START_FAILED", reason: "STATS_UNAVAILABLE", retryInMs: ENCOUNTER_RETRY_MS }
+      );
+    }
     await this.syncNextAlarm().catch((err) => console.error("Failed to arm encounter retry alarm:", err));
   }
 
