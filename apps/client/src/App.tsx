@@ -6,9 +6,10 @@
  *  3. Regional shard matchmaking (/api/join) with resume support, epoch guarding, and in-flight deduplication.
  *  4. WebSocket room connection (useGameRoom), PixiJS overworld canvas (GameCanvas), and turn-based combat UI (BattleModal).
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { useGameRoom } from "./hooks/useGameRoom";
-import { GameCanvas } from "./components/GameCanvas";
+// Loaded on demand so the sign-in screen does not download PixiJS until a player is in a room.
+const GameCanvas = lazy(() => import("./components/GameCanvas").then((m) => ({ default: m.GameCanvas })));
 import { BattleModal } from "./components/BattleModal";
 import {
   createApiClient,
@@ -447,12 +448,14 @@ export default function App() {
 
       {/* Interactive PixiJS 2D overworld canvas; movement input locks while disconnected, unsynced, or in combat */}
       {selfId && (
-        <GameCanvas
-          myId={selfId}
-          positionsRef={positionsRef}
-          movementLocked={!connected || !synced || Boolean(battle)}
-          sendWASD={sendWASD}
-        />
+        <Suspense fallback={<div className="w-full h-screen" />}>
+          <GameCanvas
+            myId={selfId}
+            positionsRef={positionsRef}
+            movementLocked={!connected || !synced || Boolean(battle)}
+            sendWASD={sendWASD}
+          />
+        </Suspense>
       )}
 
       {/* Turn-based encounter modal displayed whenever the player is participating in an active battle */}

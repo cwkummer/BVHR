@@ -9,6 +9,21 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      output: {
+        // Keep React in its own long-lived chunk so app-only changes do not re-download it. PixiJS is
+        // deliberately NOT named here: it must stay bundled with the lazy-loaded canvas (naming it pulls
+        // Vite's shared dynamic-import helper into that chunk and makes the entry bundle preload all of Pixi).
+        manualChunks(id) {
+          if (id.includes("/node_modules/react-dom/") || id.includes("/node_modules/react/") || id.includes("/node_modules/scheduler/")) {
+            return "react";
+          }
+          return undefined;
+        }
+      }
+    }
+  },
   server: {
     proxy: {
       // Forward REST/RPC API requests to the local Cloudflare Worker dev server
