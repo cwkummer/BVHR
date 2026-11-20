@@ -170,7 +170,7 @@ export async function verifyGoogleIdTokenWithJwks(
 
   const signingInput = new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`);
   const signatureBytes = base64UrlDecodeToBytes(encodedSignature);
-  const validSig = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", cryptoKey, signatureBytes, signingInput);
+  const validSig = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", cryptoKey, signatureBytes as Uint8Array<ArrayBuffer>, signingInput);
   if (!validSig) {
     throw new Error("Invalid Google ID token signature");
   }

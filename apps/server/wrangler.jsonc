@@ -69,7 +69,11 @@
         "bindings": [
           { "name": "GAME_ROOM", "class_name": "GameRoom" }
         ]
-      }
+      },
+      // Environment overrides do not inherit `migrations`, so the SQLite DO class must be declared here too.
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["GameRoom"] }
+      ]
     }
   }
 }

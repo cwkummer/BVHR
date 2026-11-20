@@ -16,11 +16,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { drizzle, DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
-import migrations from "../drizzle-do/migrations";
+import migrations from "../drizzle-do/migrations/migrations";
 import { players, battles, pendingRewards, PlayerRow } from "./db/do-schema";
 import { UserProfile } from "./db/d1-schema";
 import { BUILDINGS, stepMovement } from "../../../shared/map-zones";
-import type { ClientMessage, ServerMessage, BattleAction, PlayerSnapshot } from "../../../shared/protocol";
+import type { ClientMessage, ServerMessage, BattleAction, BattleState, PlayerSnapshot } from "../../../shared/protocol";
 import type { Env } from "./index";
 import {
   BATTLE_REWARD_GOLD,
