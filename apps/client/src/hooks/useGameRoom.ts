@@ -102,6 +102,11 @@ export function useGameRoom(
         } catch (err) {
           // Do not retry if the session token itself is expired/invalid.
           if (err instanceof Error && err.name === "AuthExpiredError") return;
+          // The server cannot take us back into this room: re-matchmake instead of retrying it.
+          if (err instanceof Error && err.name === "RoomUnavailableError" && onShardUnavailableRef.current) {
+            onShardUnavailableRef.current();
+            return;
+          }
           if (!isUnmounted) {
             const expDelay = Math.min(MAX_RECONNECT_MS, BASE_RECONNECT_MS * 2 ** reconnectAttempt);
             const jitter = Math.floor(Math.random() * 400);

@@ -11,6 +11,7 @@ import { Hono } from "hono";
 import { drizzle } from "drizzle-orm/d1";
 import { eq, like } from "drizzle-orm";
 import { users, type UserProfile } from "./db/d1-schema";
+import { canReconnectToShard, type ShardStats } from "./shard-routing";
 import {
   mintSessionToken,
   mintWsTicket,
@@ -37,6 +38,8 @@ const ROOM_SOFT_CAP = 40;
 const MAX_SHARDS_PER_REGION = 16;
 const SHARD_PROBE_BATCH_SIZE = 4;
 const SHARD_CACHE_TTL_MS = 3_000;
+// Mirrors the hard cap enforced inside GameRoom; used only if a shard omits `hardCap` in its stats.
+const DEFAULT_ROOM_HARD_CAP = 50;
 
 const VALID_CONTINENTS = new Set(["na", "eu", "as", "oc", "sa", "af"]);
 const SHARD_ID_RE = /^(?:(na|eu|as|oc|sa|af)-)?overworld-([1-9]|1[0-6])$/;
@@ -54,7 +57,7 @@ const CONTINENT_TO_HINT: Record<string, DurableObjectLocationHint> = {
 // Isolate-level caches and single-flight maps to coalesce concurrent shard occupancy probes.
 const shardCountCache = new Map<string, ShardCountCacheEntry>();
 const inFlightShardStats = new Map<string, Promise<number>>();
-const inFlightPlayerStats = new Map<string, Promise<{ count: number; hasPlayer: boolean }>>();
+const inFlightPlayerStats = new Map<string, Promise<ShardStats>>();
 
 /**
  * Ensures `JWT_SECRET` is configured with a minimum length before signing or verifying tokens.
@@ -158,7 +161,7 @@ async function fetchShardStatsWithPlayer(
   regionalRoomId: string,
   continent: string,
   playerId: string
-): Promise<{ count: number; hasPlayer: boolean }> {
+): Promise<ShardStats> {
   const key = `${regionalRoomId}:${playerId}`;
   const existing = inFlightPlayerStats.get(key);
   if (existing) {
@@ -173,12 +176,16 @@ async function fetchShardStatsWithPlayer(
     if (!res.ok) {
       throw new Error(`Shard stats failed (${res.status}) for ${regionalRoomId}`);
     }
-    const stats = (await res.json()) as { count: number; hasPlayer?: boolean };
+    const stats = (await res.json()) as { count: number; hasPlayer?: boolean; hardCap?: number };
     shardCountCache.set(regionalRoomId, {
       count: Math.min(ROOM_SOFT_CAP, Math.max(0, stats.count)),
       expiresAt: Date.now() + SHARD_CACHE_TTL_MS
     });
-    return { count: stats.count, hasPlayer: Boolean(stats.hasPlayer) };
+    return {
+      count: stats.count,
+      hasPlayer: Boolean(stats.hasPlayer),
+      hardCap: stats.hardCap ?? DEFAULT_ROOM_HARD_CAP
+    };
   })().finally(() => {
     inFlightPlayerStats.delete(key);
   });
@@ -272,7 +279,7 @@ type ShardTicketSuccess = {
 
 type ShardTicketResult =
   | { status: 200; body: ShardTicketSuccess }
-  | { status: 503; body: { error: string } };
+  | { status: 400 | 409 | 503; body: { error: string } };
 
 /**
  * Resolves a player's target regional shard—honoring `preferredRoomId` when the player is already
@@ -338,6 +345,45 @@ async function issueShardSessionTicket(
       count: nextCount,
       cap: ROOM_SOFT_CAP
     }
+  };
+}
+
+/**
+ * Mints a ticket for exactly `requestedRoomId` (reconnect semantics). Unlike `/api/join`, this never
+ * substitutes another shard: if the room is unavailable the caller gets 409 (or 503 if the shard cannot
+ * be reached) and is expected to re-run matchmaking. With no room id, falls back to normal matchmaking.
+ */
+async function issueReconnectTicket(
+  env: Env,
+  secret: string,
+  userId: string,
+  continent: string,
+  now: number,
+  requestedRoomId?: unknown
+): Promise<ShardTicketResult> {
+  if (typeof requestedRoomId !== "string") {
+    return issueShardSessionTicket(env, secret, userId, continent, now);
+  }
+  const parsed = normalizeRegionalRoomId(requestedRoomId, continent);
+  if (!parsed) {
+    return { status: 400, body: { error: "Invalid room shard" } };
+  }
+
+  let stats: ShardStats;
+  try {
+    stats = await fetchShardStatsWithPlayer(env, parsed.regionalRoomId, parsed.targetContinent, userId);
+  } catch (err) {
+    console.warn(`Reconnect stats failed for ${parsed.regionalRoomId}:`, err);
+    return { status: 503, body: { error: "Room is temporarily unavailable" } };
+  }
+  if (!canReconnectToShard(stats)) {
+    return { status: 409, body: { error: "Room is full; rejoin matchmaking" } };
+  }
+
+  const wsTicket = await mintWsTicket(secret, userId, parsed.regionalRoomId, now);
+  return {
+    status: 200,
+    body: { roomId: parsed.regionalRoomId, wsTicket, count: stats.count, cap: ROOM_SOFT_CAP }
   };
 }
 
@@ -484,12 +530,10 @@ const app = baseApp
     }
 
     const result = await issueShardSessionTicket(c.env, secret, userId, continent, now, resumeRoomId);
-    if (result.status === 503) {
-      return c.json(result.body, 503);
-    }
-    return c.json(result.body, 200);
+    if (result.status === 200) return c.json(result.body, 200);
+    return c.json(result.body, 503);
   })
-  // Mints a fresh WebSocket ticket for reconnection or room switching.
+  // Mints a fresh WebSocket ticket for reconnecting to the named room (409 if it cannot take the player back).
   .post("/api/ws-ticket", async (c) => {
     const secret = requireJwtSecret(c.env);
     const userId = await verifySessionToken(c.req.header("Authorization"), secret);
@@ -504,12 +548,11 @@ const app = baseApp
     }
 
     const continent = resolveContinent(c.req.raw.cf?.continent);
-    const now = Date.now();
-    const result = await issueShardSessionTicket(c.env, secret, userId, continent, now, requestedRoomId);
-    if (result.status === 503) {
-      return c.json(result.body, 503);
-    }
-    return c.json(result.body, 200);
+    const result = await issueReconnectTicket(c.env, secret, userId, continent, Date.now(), requestedRoomId);
+    if (result.status === 200) return c.json(result.body, 200);
+    if (result.status === 400) return c.json(result.body, 400);
+    if (result.status === 409) return c.json(result.body, 409);
+    return c.json(result.body, 503);
   })
   // Upgrades an authenticated WebSocket request after validating the room-bound ticket and
   // forwarding the player's projected profile via X-Player-Data to the GameRoom Durable Object.

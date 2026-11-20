@@ -2,6 +2,7 @@
  * Unit tests covering core shared physics, combat formulas, timeout forfeiture rules,
  * JWT scope isolation between session tokens and WebSocket tickets, and JWKS cache TTL clamping.
  */
+import { canReconnectToShard } from "../shard-routing";
 import { pickEncounterPairs, type EncounterCandidate } from "../encounters";
 import { describe, expect, test } from "bun:test";
 import { stepMovement, MAP_WIDTH, MAP_HEIGHT, PLAYER_RADIUS, WALLS } from "../../../../shared/map-zones";
@@ -123,5 +124,19 @@ describe("encounter matching", () => {
     const ids = pairs.flatMap((p) => [p.first.id, p.second.id]);
     expect(new Set(ids).size).toBe(ids.length);
     expect(pairs).toHaveLength(2);
+  });
+});
+
+describe("shard reconnect routing", () => {
+  test("allows a tracked player back even when the shard is at its hard cap", () => {
+    expect(canReconnectToShard({ count: 50, hasPlayer: true, hardCap: 50 })).toBe(true);
+  });
+
+  test("allows an untracked player while the shard is under its hard cap", () => {
+    expect(canReconnectToShard({ count: 49, hasPlayer: false, hardCap: 50 })).toBe(true);
+  });
+
+  test("rejects an untracked player once the shard is at its hard cap", () => {
+    expect(canReconnectToShard({ count: 50, hasPlayer: false, hardCap: 50 })).toBe(false);
   });
 });

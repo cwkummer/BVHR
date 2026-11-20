@@ -32,6 +32,17 @@ class AuthExpiredError extends Error {
 }
 
 /**
+ * Thrown when the server cannot issue a ticket for the exact room requested, so reconnecting to it
+ * is pointless and the client should re-run `/api/join` instead of retrying the same room.
+ */
+class RoomUnavailableError extends Error {
+  constructor(message = "Room unavailable") {
+    super(message);
+    this.name = "RoomUnavailableError";
+  }
+}
+
+/**
  * Minimal client-side session container. User identity and profile stats remain
  * server-authoritative and are retrieved via `/api/me` or WebSocket `SYNC_STATE`.
  */
@@ -221,10 +232,19 @@ export default function App() {
         handleAuthExpired();
         throw new AuthExpiredError();
       }
+      // 409: the server will not take us back into this exact room (e.g. full); re-matchmake.
+      // 503 is treated as transient and retried with the normal reconnect backoff.
+      if (res.status === 409) {
+        throw new RoomUnavailableError(await readApiError(res, "Room unavailable"));
+      }
       if (!res.ok) {
         throw new Error(await readApiError(res, "Failed to mint WebSocket ticket"));
       }
       const data = await res.json();
+      // A ticket is bound to one room; never use one minted for a different shard.
+      if (data.roomId !== targetRoomId) {
+        throw new RoomUnavailableError("Server returned a ticket for a different room");
+      }
       return data.wsTicket;
     },
     [auth?.token, handleAuthExpired]
