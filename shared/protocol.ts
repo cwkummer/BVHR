@@ -7,6 +7,13 @@
 export type BattleAction = "ATTACK" | "HEAL" | "FLEE";
 
 /**
+ * Lifecycle states of a persisted battle. A battle row exists only while it is `ACTIVE`; it is deleted
+ * when it ends. Add a state here (and handle it) before writing any other value.
+ */
+export const BATTLE_STATUSES = ["ACTIVE"] as const;
+export type BattleStatus = (typeof BATTLE_STATUSES)[number];
+
+/**
  * Lightweight overworld presence and identity snapshot sent for players in a shard room.
  */
 export type PlayerSnapshot = {
@@ -32,7 +39,7 @@ export type BattleState = {
   turnDeadlineAt: number;
   p1Timeouts: number;
   p2Timeouts: number;
-  status: string;
+  status: BattleStatus;
   hpPercentByPlayerId?: Record<string, number>;
 };
 

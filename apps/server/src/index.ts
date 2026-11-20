@@ -7,11 +7,11 @@
  *  - WebSocket upgrade routing (`/ws/:roomId`) with ticket verification and profile forwarding (`X-Player-Data`)
  *    to the target `GameRoom` Durable Object shard.
  */
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { drizzle } from "drizzle-orm/d1";
 import { eq, like } from "drizzle-orm";
 import { users, type UserProfile } from "./db/d1-schema";
-import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "../../../shared/shard-config";
+import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "shared/shard-config";
 import { toPlayerIdentity } from "./player-identity";
 import { canReconnectToShard, pickFirstOpenShard, type ShardStats } from "./shard-routing";
 import {
@@ -358,6 +358,43 @@ function toPublicProfile(profile: UserProfile): PublicUserProfile {
   };
 }
 
+type ShardTicketRequest = {
+  secret: string;
+  userId: string;
+  continent: string;
+  /** Optional room hint from the request body (`resumeRoomId` for join, `roomId` for ws-ticket). */
+  roomHint: unknown;
+};
+
+/**
+ * Common front half of `/api/join` and `/api/ws-ticket`: authenticates the session token, resolves the
+ * caller's continent and reads the optional room hint from the JSON body (an empty or invalid body is
+ * valid and means no hint). Returns null when the session token is missing, invalid or expired.
+ *
+ * This deliberately returns data rather than a `Response`: each route builds its own `c.json(...)`
+ * responses so Hono can infer the exact status codes and bodies the client's RPC types depend on.
+ */
+async function readShardTicketRequest(
+  c: Context<{ Bindings: Env }>,
+  hintKey: "resumeRoomId" | "roomId"
+): Promise<ShardTicketRequest | null> {
+  const secret = requireJwtSecret(c.env);
+  const userId = await verifySessionToken(c.req.header("Authorization"), secret);
+  if (!userId) return null;
+
+  let roomHint: unknown;
+  try {
+    const body: unknown = await c.req.json();
+    if (typeof body === "object" && body !== null) {
+      roomHint = (body as Record<string, unknown>)[hintKey];
+    }
+  } catch {
+    // Missing or malformed body: proceed without a room hint.
+  }
+
+  return { secret, userId, continent: resolveContinent(c.req.raw.cf?.continent), roomHint };
+}
+
 const baseApp = new Hono<{ Bindings: Env }>();
 
 // Global error boundary returning a uniform JSON 500 response on unhandled exceptions.
@@ -462,41 +499,33 @@ const app = baseApp
   })
   // Assigns or resumes a regional shard and issues a short-lived WebSocket ticket.
   .post("/api/join", async (c) => {
-    const secret = requireJwtSecret(c.env);
-    const userId = await verifySessionToken(c.req.header("Authorization"), secret);
-    if (!userId) return c.json({ error: "Invalid or expired session token" }, 401);
+    const req = await readShardTicketRequest(c, "resumeRoomId");
+    if (!req) return c.json({ error: "Invalid or expired session token" }, 401);
 
-    const continent = resolveContinent(c.req.raw.cf?.continent);
-    const now = Date.now();
-
-    let resumeRoomId: unknown;
-    try {
-      const body = await c.req.json<{ resumeRoomId?: unknown }>();
-      resumeRoomId = body.resumeRoomId;
-    } catch {
-      // Empty request body is valid when joining without a prior room hint.
-    }
-
-    const result = await issueShardSessionTicket(c.env, secret, userId, continent, now, resumeRoomId);
+    const result = await issueShardSessionTicket(
+      c.env,
+      req.secret,
+      req.userId,
+      req.continent,
+      Date.now(),
+      req.roomHint
+    );
     if (result.status === 200) return c.json(result.body, 200);
     return c.json(result.body, 503);
   })
   // Mints a fresh WebSocket ticket for reconnecting to the named room (409 if it cannot take the player back).
   .post("/api/ws-ticket", async (c) => {
-    const secret = requireJwtSecret(c.env);
-    const userId = await verifySessionToken(c.req.header("Authorization"), secret);
-    if (!userId) return c.json({ error: "Invalid or expired session token" }, 401);
+    const req = await readShardTicketRequest(c, "roomId");
+    if (!req) return c.json({ error: "Invalid or expired session token" }, 401);
 
-    let requestedRoomId: unknown;
-    try {
-      const body = await c.req.json<{ roomId?: unknown }>();
-      requestedRoomId = body.roomId;
-    } catch {
-      // Optional body; falls back to fill-first regional shard selection.
-    }
-
-    const continent = resolveContinent(c.req.raw.cf?.continent);
-    const result = await issueReconnectTicket(c.env, secret, userId, continent, Date.now(), requestedRoomId);
+    const result = await issueReconnectTicket(
+      c.env,
+      req.secret,
+      req.userId,
+      req.continent,
+      Date.now(),
+      req.roomHint
+    );
     if (result.status === 200) return c.json(result.body, 200);
     if (result.status === 400) return c.json(result.body, 400);
     if (result.status === 409) return c.json(result.body, 409);

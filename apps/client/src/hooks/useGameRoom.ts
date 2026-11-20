@@ -9,7 +9,7 @@
  *    and mutable `positionsRef` read directly by `GameSceneController` each animation frame.
  */
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { ClientMessage, ServerMessage, PlayerSnapshot, BattleState, BattleAction } from "../../../../shared/protocol";
+import type { ClientMessage, ServerMessage, PlayerSnapshot, BattleState, BattleAction } from "shared/protocol";
 
 /**
  * Mutable client-side entity position record updated on `SYNC_STATE`, `SNAPSHOT`, and `PLAYER_JOINED`

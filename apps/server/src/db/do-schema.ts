@@ -6,6 +6,7 @@
  *  - `pending_rewards`: transactional outbox of D1 XP/gold grants awaiting confirmation.
  */
 import { sqliteTable, text, integer, real, index } from "drizzle-orm/sqlite-core";
+import { BATTLE_STATUSES } from "shared/protocol";
 
 export const players = sqliteTable("players", {
   id: text("id").primaryKey(),
@@ -34,7 +35,7 @@ export const battles = sqliteTable(
     turnDeadlineAt: integer("turn_deadline_at").notNull(),
     p1Timeouts: integer("p1_timeouts").notNull().default(0),
     p2Timeouts: integer("p2_timeouts").notNull().default(0),
-    status: text("status").notNull().default("ACTIVE")
+    status: text("status", { enum: BATTLE_STATUSES }).notNull().default("ACTIVE")
   },
   (table) => [index("idx_battles_status_deadline").on(table.status, table.turnDeadlineAt)]
 );

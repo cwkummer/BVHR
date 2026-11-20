@@ -6,7 +6,7 @@ import { parseCombatStats, parsePlayerIdentity, parsePlayerIdentityHeader } from
 import { canReconnectToShard, pickFirstOpenShard } from "../shard-routing";
 import { pickEncounterPairs, type EncounterCandidate } from "../encounters";
 import { describe, expect, test } from "bun:test";
-import { stepMovement, MAP_WIDTH, MAP_HEIGHT, PLAYER_RADIUS, WALLS } from "../../../../shared/map-zones";
+import { stepMovement, MAP_WIDTH, MAP_HEIGHT, PLAYER_RADIUS, WALLS } from "shared/map-zones";
 import {
   computeBasicAttackDamage,
   computeHealedHp,

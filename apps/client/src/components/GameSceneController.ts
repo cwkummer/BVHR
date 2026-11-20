@@ -7,7 +7,7 @@
  *    smooth exponential interpolation for remote players, and camera centering on `myId`.
  */
 import { Application, Container, Graphics, Text } from "pixi.js";
-import { BUILDINGS, WALLS, MAP_WIDTH, MAP_HEIGHT, PLAYER_RADIUS, stepMovement } from "../../../../shared/map-zones";
+import { BUILDINGS, WALLS, MAP_WIDTH, MAP_HEIGHT, PLAYER_RADIUS, stepMovement } from "shared/map-zones";
 import type { EntityPos } from "../hooks/useGameRoom";
 
 export class GameSceneController {

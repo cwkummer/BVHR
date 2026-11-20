@@ -2,8 +2,14 @@
   "name": "shared",
   "private": true,
   "type": "module",
+  "exports": {
+    "./protocol": "./protocol.ts",
+    "./map-zones": "./map-zones.ts",
+    "./shard-config": "./shard-config.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
-  "_comment_overview": "Shared workspace package containing cross-runtime protocol message types, world map layout definitions, and deterministic movement/collision physics."
+  "_comment_overview": "Shared workspace package containing cross-runtime protocol message types, world map layout definitions, and deterministic movement/collision physics.",
+  "_comment_exports": "Import as `shared/protocol`, `shared/map-zones` or `shared/shard-config`; consumers declare `shared` as a `workspace:*` dependency."
 }

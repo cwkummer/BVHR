@@ -19,9 +19,9 @@ import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import migrations from "../drizzle-do/migrations/migrations";
 import { players, battles, pendingRewards, PlayerRow } from "./db/do-schema";
 import { parseCombatStats, parsePlayerIdentityHeader, type CombatStats, type PlayerIdentity } from "./player-identity";
-import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "../../../shared/shard-config";
-import { BUILDINGS, stepMovement } from "../../../shared/map-zones";
-import type { ClientMessage, ServerMessage, BattleAction, BattleState, PlayerSnapshot } from "../../../shared/protocol";
+import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "shared/shard-config";
+import { BUILDINGS, stepMovement } from "shared/map-zones";
+import type { ClientMessage, ServerMessage, BattleAction, BattleState, PlayerSnapshot } from "shared/protocol";
 import type { Env } from "./index";
 import {
   BATTLE_REWARD_GOLD,
@@ -191,7 +191,9 @@ export class GameRoom extends DurableObject<Env> {
     }
 
     const [client, server] = Object.values(new WebSocketPair());
-    this.ctx.acceptWebSocket(server);
+    // Tag the socket with the player id so per-player lookups use the runtime's index (`getWebSockets(tag)`)
+    // instead of scanning every socket; tags persist across hibernation.
+    this.ctx.acceptWebSocket(server, [profile.id]);
     server.serializeAttachment({ playerId: profile.id });
 
     this.closeSupersededSockets(profile.id, server);
@@ -253,19 +255,16 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   /**
-   * Closes any prior open WebSocket belonging to `playerId` with close code 4001 so only one
+   * Closes any other WebSocket tagged with `playerId` with close code 4001 so only one
    * active tab remains connected per player.
    */
   private closeSupersededSockets(playerId: string, activeWs: WebSocket): void {
-    for (const existingWs of this.ctx.getWebSockets()) {
+    for (const existingWs of this.ctx.getWebSockets(playerId)) {
       if (existingWs === activeWs) continue;
-      const session = existingWs.deserializeAttachment() as { playerId?: string } | null;
-      if (session?.playerId === playerId) {
-        try {
-          existingWs.close(4001, "Superseded by new session");
-        } catch {
-          // Ignore already-closing sockets.
-        }
+      try {
+        existingWs.close(4001, "Superseded by new session");
+      } catch {
+        // Ignore already-closing sockets.
       }
     }
   }
@@ -686,7 +685,7 @@ export class GameRoom extends DurableObject<Env> {
       turnDeadlineAt,
       p1Timeouts: 0,
       p2Timeouts: 0,
-      status: "ACTIVE"
+      status: "ACTIVE" as const
     };
 
     p1.battleId = battleId;
@@ -914,11 +913,9 @@ export class GameRoom extends DurableObject<Env> {
    * Checks whether `playerId` currently has at least one open WebSocket (optionally excluding `excludeWs`).
    */
   private hasOpenSocket(playerId: string, excludeWs?: WebSocket): boolean {
-    return this.ctx.getWebSockets().some((ws) => {
-      if (ws === excludeWs || ws.readyState !== WebSocket.OPEN) return false;
-      const session = ws.deserializeAttachment() as { playerId?: string } | null;
-      return session?.playerId === playerId;
-    });
+    return this.ctx
+      .getWebSockets(playerId)
+      .some((ws) => ws !== excludeWs && ws.readyState === WebSocket.OPEN);
   }
 
   /**
@@ -1183,16 +1180,16 @@ export class GameRoom extends DurableObject<Env> {
    */
   private sendToPlayers(playerIds: string[], payload: ServerMessage) {
     const msg = JSON.stringify(payload);
-    for (const ws of this.ctx.getWebSockets()) {
-      if (ws.readyState !== WebSocket.OPEN) continue;
-      const session = ws.deserializeAttachment() as { playerId?: string } | null;
-      if (session?.playerId && playerIds.includes(session.playerId)) {
+    for (const playerId of playerIds) {
+      for (const ws of this.ctx.getWebSockets(playerId)) {
+        if (ws.readyState !== WebSocket.OPEN) continue;
         try {
           ws.send(msg);
         } catch (err) {
-          console.warn(`Failed to send WebSocket message to ${session.playerId}:`, err);
+          console.warn(`Failed to send WebSocket message to ${playerId}:`, err);
         }
       }
     }
   }
+
 }

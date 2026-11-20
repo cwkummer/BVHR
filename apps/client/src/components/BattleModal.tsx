@@ -4,7 +4,7 @@
  * server-computed HP percentages, scrollable battle log, and action buttons (ATTACK, HEAL, FLEE).
  */
 import { useEffect, useRef, useState } from "react";
-import type { BattleState, PlayerSnapshot, BattleAction } from "../../../../shared/protocol";
+import type { BattleState, PlayerSnapshot, BattleAction } from "shared/protocol";
 
 type Props = {
   myId: string;
