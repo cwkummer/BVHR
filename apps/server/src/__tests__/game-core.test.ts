@@ -2,6 +2,7 @@
  * Unit tests covering core shared physics, combat formulas, timeout forfeiture rules,
  * JWT scope isolation between session tokens and WebSocket tickets, and JWKS cache TTL clamping.
  */
+import { parsePlayerIdentity, parsePlayerIdentityHeader } from "../player-identity";
 import { canReconnectToShard, pickFirstOpenShard } from "../shard-routing";
 import { pickEncounterPairs, type EncounterCandidate } from "../encounters";
 import { describe, expect, test } from "bun:test";
@@ -202,5 +203,37 @@ describe("fill-first shard selection", () => {
       return 40;
     });
     expect(open).toBeNull();
+  });
+});
+
+describe("player identity header validation", () => {
+  const ok = { id: "u1", username: "Alice", maxHp: 100, attack: 15, defense: 6 };
+
+  test("accepts a valid identity and drops unknown fields", () => {
+    expect(parsePlayerIdentity({ ...ok, email: "a@x.com", googleSub: "g" })).toEqual(ok);
+  });
+
+  test("rejects missing, mistyped and out-of-range fields", () => {
+    expect(parsePlayerIdentity(null)).toBeNull();
+    expect(parsePlayerIdentity("x")).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, id: "" })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, id: "x".repeat(65) })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, username: "" })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, username: "x".repeat(33) })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, username: 5 })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, maxHp: 0 })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, maxHp: 1e9 })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, attack: -1 })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, attack: 1.5 })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, defense: Number.NaN })).toBeNull();
+    expect(parsePlayerIdentity({ ...ok, defense: "6" })).toBeNull();
+    const { maxHp, ...missing } = ok;
+    expect(parsePlayerIdentity(missing)).toBeNull();
+  });
+
+  test("header parsing handles absent, malformed and valid values", () => {
+    expect(parsePlayerIdentityHeader(null)).toBeNull();
+    expect(parsePlayerIdentityHeader("{not json")).toBeNull();
+    expect(parsePlayerIdentityHeader(JSON.stringify(ok))).toEqual(ok);
   });
 });

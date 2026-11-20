@@ -11,6 +11,8 @@ import { Hono } from "hono";
 import { drizzle } from "drizzle-orm/d1";
 import { eq, like } from "drizzle-orm";
 import { users, type UserProfile } from "./db/d1-schema";
+import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "../../../shared/shard-config";
+import { toPlayerIdentity } from "./player-identity";
 import { canReconnectToShard, pickFirstOpenShard, type ShardStats } from "./shard-routing";
 import {
   mintSessionToken,
@@ -33,12 +35,9 @@ type ShardCountCacheEntry = {
   expiresAt: number;
 };
 
-// Soft cap triggers shard rollover during matchmaking; hard cap is enforced inside GameRoom.
-const ROOM_SOFT_CAP = 40;
+// Soft cap (shared) triggers shard rollover during matchmaking; the hard cap is enforced inside GameRoom.
 const MAX_SHARDS_PER_REGION = 16;
 const SHARD_CACHE_TTL_MS = 3_000;
-// Mirrors the hard cap enforced inside GameRoom; used only if a shard omits `hardCap` in its stats.
-const DEFAULT_ROOM_HARD_CAP = 50;
 
 const VALID_CONTINENTS = new Set(["na", "eu", "as", "oc", "sa", "af"]);
 const SHARD_ID_RE = /^(?:(na|eu|as|oc|sa|af)-)?overworld-([1-9]|1[0-6])$/;
@@ -183,7 +182,7 @@ async function fetchShardStatsWithPlayer(
     return {
       count: stats.count,
       hasPlayer: Boolean(stats.hasPlayer),
-      hardCap: stats.hardCap ?? DEFAULT_ROOM_HARD_CAP
+      hardCap: stats.hardCap ?? ROOM_HARD_CAP
     };
   })().finally(() => {
     inFlightPlayerStats.delete(key);
@@ -342,7 +341,7 @@ type PublicUserProfile = Pick<
 >;
 
 /**
- * Projects a D1 `UserProfile` row into `PublicUserProfile` for API responses and internal DO headers.
+ * Projects a D1 `UserProfile` row into `PublicUserProfile` for API responses.
  */
 function toPublicProfile(profile: UserProfile): PublicUserProfile {
   return {
@@ -535,7 +534,9 @@ const app = baseApp
     const shardContinent = match[1] || continent;
     const stub = getRoomStub(c.env, regionalRoomId, shardContinent);
     const headers = new Headers(c.req.raw.headers);
-    headers.set("X-Player-Data", JSON.stringify(toPublicProfile(profile)));
+    // `set` replaces any client-supplied value, and only the minimal validated identity is forwarded
+    // (no email or Google id); the room re-validates it because the header is a trust boundary.
+    headers.set("X-Player-Data", JSON.stringify(toPlayerIdentity(profile)));
 
     const res = await stub.fetch(new Request(c.req.url, { headers }));
     if (res.status === 503) {

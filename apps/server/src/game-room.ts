@@ -18,7 +18,8 @@ import { drizzle, DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import migrations from "../drizzle-do/migrations/migrations";
 import { players, battles, pendingRewards, PlayerRow } from "./db/do-schema";
-import { UserProfile } from "./db/d1-schema";
+import { parsePlayerIdentityHeader, type PlayerIdentity } from "./player-identity";
+import { ROOM_HARD_CAP, ROOM_SOFT_CAP } from "../../../shared/shard-config";
 import { BUILDINGS, stepMovement } from "../../../shared/map-zones";
 import type { ClientMessage, ServerMessage, BattleAction, BattleState, PlayerSnapshot } from "../../../shared/protocol";
 import type { Env } from "./index";
@@ -49,8 +50,6 @@ type LivePlayer = PlayerRow & {
 };
 
 const MAX_MSGS_PER_SEC = 30;
-const ROOM_SOFT_CAP = 40;
-const ROOM_HARD_CAP = 50;
 const INITIAL_REWARD_RETRY_MS = 5_000;
 const MAX_REWARD_RETRY_MS = 300_000;
 const MAX_REWARD_ATTEMPTS = 10;
@@ -207,16 +206,11 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   /**
-   * Extracts and parses the JSON `X-Player-Data` header forwarded by the Worker entry point.
+   * Extracts and validates the `X-Player-Data` identity header forwarded by the Worker entry point.
+   * Returns null (rejecting the connection) if it is absent, malformed or out of range.
    */
-  private parsePlayerProfileHeader(request: Request): UserProfile | null {
-    const rawProfileHeader = request.headers.get("X-Player-Data");
-    if (!rawProfileHeader) return null;
-    try {
-      return JSON.parse(rawProfileHeader) as UserProfile;
-    } catch {
-      return null;
-    }
+  private parsePlayerProfileHeader(request: Request): PlayerIdentity | null {
+    return parsePlayerIdentityHeader(request.headers.get("X-Player-Data"));
   }
 
   /**
@@ -241,7 +235,7 @@ export class GameRoom extends DurableObject<Env> {
    * Re-syncs an existing `LivePlayer` on reconnect (resetting movement/dirty state and refreshing
    * D1 stats when outside combat) or inserts and registers a brand-new player row.
    */
-  private hydrateOrCreatePlayer(profile: UserProfile): { player: LivePlayer; isNewJoin: boolean } {
+  private hydrateOrCreatePlayer(profile: PlayerIdentity): { player: LivePlayer; isNewJoin: boolean } {
     let player = this.state.get(profile.id);
     const isNewJoin = !player;
 
