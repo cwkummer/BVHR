@@ -51,6 +51,7 @@ type LivePlayer = PlayerRow & {
   encounterPending: boolean;
 };
 
+const ENCOUNTER_RETRY_MS = 2_000;
 const MAX_MSGS_PER_SEC = 30;
 const INITIAL_REWARD_RETRY_MS = 5_000;
 const MAX_REWARD_RETRY_MS = 300_000;
@@ -67,6 +68,8 @@ export class GameRoom extends DurableObject<Env> {
   private lastScheduledAlarmAt: number | null | undefined = undefined;
   private battleLocks = new Map<string, Promise<void>>();
   private inFlightRewardIds = new Set<string>();
+  // Earliest time a failed encounter start (D1 stats unavailable) may be retried; null when not backing off.
+  private encounterRetryAt: number | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -574,10 +577,14 @@ export class GameRoom extends DurableObject<Env> {
 
   /**
    * Begins every currently due zone encounter (see `pickEncounterPairs`). Matched players are frozen and
-   * flagged pending synchronously, then each battle starts once fresh combat stats have been read from
-   * D1. Never rejects; failures are logged.
+   * flagged pending synchronously, then each battle starts once their combat stats have been read from
+   * D1. Skipped while backing off after a failed stats read. Never rejects; failures are logged.
    */
   private async startDueEncounters(now: number): Promise<void> {
+    if (this.encounterRetryAt !== null) {
+      if (now < this.encounterRetryAt) return;
+      this.encounterRetryAt = null;
+    }
     const candidates = Array.from(this.state.values()).filter((p) => !p.encounterPending);
     const tasks = pickEncounterPairs(candidates, now).map(({ zoneId, first, second }) => {
       for (const p of [first, second]) {
@@ -594,24 +601,27 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   /**
-   * Refreshes both players' combat stats from D1 (falling back to the stats from join if D1 is
-   * unavailable, so an outage never blocks combat), re-checks that the pair is still eligible after the
-   * await, then starts the battle at full HP.
+   * Reads both players' combat stats from D1, re-checks that the pair is still eligible after the await,
+   * then starts the battle at full HP. D1 is the only source of combat stats, so if either player's stats
+   * cannot be read (outage, missing user, invalid values) no battle starts: the players stay where they
+   * are and the match is retried after `ENCOUNTER_RETRY_MS` via the alarm.
    */
   private async beginEncounter(first: LivePlayer, second: LivePlayer, zoneId: string): Promise<void> {
     try {
+      let fresh: Map<string, CombatStats>;
       try {
-        const fresh = await this.loadCombatStats([first.id, second.id]);
-        for (const p of [first, second]) {
-          const stats = fresh.get(p.id);
-          if (stats) {
-            p.maxHp = stats.maxHp;
-            p.attack = stats.attack;
-            p.defense = stats.defense;
-          }
-        }
+        fresh = await this.loadCombatStats([first.id, second.id]);
       } catch (err) {
-        console.warn("Battle-start stat refresh failed; using stats from join:", err);
+        console.error("Battle not started: could not read stats from D1:", err);
+        await this.deferEncounterRetry();
+        return;
+      }
+      const firstStats = fresh.get(first.id);
+      const secondStats = fresh.get(second.id);
+      if (!firstStats || !secondStats) {
+        console.error(`Battle not started: missing or invalid D1 stats for ${first.id} / ${second.id}`);
+        await this.deferEncounterRetry();
+        return;
       }
 
       const now = Date.now();
@@ -624,14 +634,22 @@ export class GameRoom extends DurableObject<Env> {
       );
       if (!stillEligible) return;
 
-      first.hp = first.maxHp;
-      second.hp = second.maxHp;
+      Object.assign(first, firstStats, { hp: firstStats.maxHp });
+      Object.assign(second, secondStats, { hp: secondStats.maxHp });
       this.startEncounterSync(first, second, zoneId);
       await this.syncNextAlarm();
     } finally {
       first.encounterPending = false;
       second.encounterPending = false;
     }
+  }
+
+  /**
+   * Backs off encounter matching and arms the alarm so the failed start is retried automatically.
+   */
+  private async deferEncounterRetry(): Promise<void> {
+    this.encounterRetryAt = Date.now() + ENCOUNTER_RETRY_MS;
+    await this.syncNextAlarm().catch((err) => console.error("Failed to arm encounter retry alarm:", err));
   }
 
   /**
@@ -970,7 +988,7 @@ export class GameRoom extends DurableObject<Env> {
       }
     }
 
-    const candidates = [battleRow?.nextDeadline, rewardRow?.nextRetry, nextCooldown].filter(
+    const candidates = [battleRow?.nextDeadline, rewardRow?.nextRetry, nextCooldown, this.encounterRetryAt].filter(
       (ts): ts is number => ts != null
     );
 
