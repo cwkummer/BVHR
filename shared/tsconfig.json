@@ -1,0 +1,19 @@
+{
+  // Shared TypeScript configuration for modules imported by both client and server workspaces.
+  "compilerOptions": {
+    // Target ES2022 features supported across modern browsers and Workers/Bun runtimes.
+    "target": "ES2022",
+    // Emit/resolve ESM modules.
+    "module": "ESNext",
+    // Use Bundler module resolution for workspace imports.
+    "moduleResolution": "Bundler",
+    // Enforce strict typechecking.
+    "strict": true,
+    // Typecheck only; consumer workspaces compile or bundle shared files.
+    "noEmit": true,
+    // Skip typechecking third-party declaration files.
+    "skipLibCheck": true
+  },
+  // Include all TypeScript files under shared/.
+  "include": ["./**/*.ts"]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "server",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.40.0",
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250204.0",
+    "drizzle-kit": "^0.30.0",
+    "wrangler": "^4.0.0"
+  },
+  "_comment_overview": "Server workspace manifest for the Cloudflare Worker entry point (Hono API + WebSocket router) and GameRoom Durable Object with embedded SQLite and D1 persistence.",
+  "_comment_scripts": {
+    "dev": "Runs the Worker and Durable Objects locally with Wrangler."
+  },
+  "_comment_dependencies": {
+    "drizzle-orm": "Type-safe SQL query builder for D1 and Durable Object SQLite schemas.",
+    "hono": "Lightweight web framework powering REST/RPC routes and typed AppType inference."
+  }
+}

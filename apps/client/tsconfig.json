@@ -1,0 +1,23 @@
+{
+  // TypeScript compiler configuration for the browser client and shared protocol/zone modules.
+  "compilerOptions": {
+    // Target modern ES2022 features supported by evergreen browsers and Vite bundles.
+    "target": "ES2022",
+    // Include DOM and iterable typings alongside ES2022 standard library definitions.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // Emit/resolve ESM modules for Vite bundler consumption.
+    "module": "ESNext",
+    // Use Bundler module resolution to align with Vite and workspace package exports.
+    "moduleResolution": "Bundler",
+    // Use React 19 automatic JSX runtime without requiring manual React imports in scope.
+    "jsx": "react-jsx",
+    // Enable strict typechecking across all client and shared game code.
+    "strict": true,
+    // Typecheck only via tsc; Vite handles actual JS/CSS bundling.
+    "noEmit": true,
+    // Skip typechecking third-party declaration files to keep builds fast.
+    "skipLibCheck": true
+  },
+  // Include client source files and shared cross-workspace contracts/physics definitions.
+  "include": ["./src/**/*.ts", "./src/**/*.tsx", "../../shared/**/*.ts"]
+}

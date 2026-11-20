@@ -1,0 +1,36 @@
+{
+  "name": "my-rpg-game",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "bun --filter '*' dev",
+    "test": "bun test",
+    "typecheck": "bun --filter '*' exec tsc --noEmit",
+    "preview:prod": "bun run typecheck && bun --filter client build && bun --filter server exec wrangler dev --env prod",
+    "db:generate": "bunx drizzle-kit generate --config=apps/server/drizzle.d1.config.ts && bunx drizzle-kit generate --config=apps/server/drizzle.do.config.ts",
+    "db:migrate:local": "bun --filter server exec wrangler d1 migrations apply rpg-global-db-dev --local",
+    "db:migrate:dev": "bun --filter server exec wrangler d1 migrations apply rpg-global-db-dev --remote",
+    "db:migrate:prod": "bun --filter server exec wrangler d1 migrations apply rpg-global-db-prod --env prod --remote",
+    "deploy:dev": "bun run typecheck && bun run test && bun run db:migrate:dev && bun --filter client build && bun --filter server exec wrangler deploy",
+    "deploy:prod": "bun run typecheck && bun run test && bun run db:migrate:prod && bun --filter client build && bun --filter server exec wrangler deploy --env prod"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  },
+  "_comment_overview": "Root Bun workspace manifest orchestrating development, testing, typechecking, database migrations, and Cloudflare deployment across apps/client, apps/server, and shared.",
+  "_comment_scripts": {
+    "dev": "Runs dev scripts concurrently across all workspace packages.",
+    "test": "Executes unit tests with Bun test runner.",
+    "typecheck": "Runs tsc --noEmit across every workspace package.",
+    "preview:prod": "Typechecks, builds the client bundle, and runs Wrangler locally against the prod env config.",
+    "db:generate": "Generates Drizzle migrations for both D1 and Durable Object SQLite schemas.",
+    "db:migrate:local": "Applies D1 migrations to local Wrangler state.",
+    "db:migrate:dev": "Applies D1 migrations to the remote dev D1 database.",
+    "db:migrate:prod": "Applies D1 migrations to the remote prod D1 database.",
+    "deploy:dev": "Runs typecheck, tests, remote dev DB migrations, client build, and default Worker deploy.",
+    "deploy:prod": "Runs typecheck, tests, remote prod DB migrations, client build, and prod Worker deploy."
+  }
+}

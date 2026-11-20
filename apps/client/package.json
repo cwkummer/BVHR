@@ -1,0 +1,35 @@
+{
+  "name": "client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build"
+  },
+  "dependencies": {
+    "hono": "^4.7.0",
+    "pixi.js": "^8.8.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.1.0"
+  },
+  "_comment_overview": "Client workspace manifest for the BHVR Edge RPG React + PixiJS v8 + Tailwind CSS v4 frontend. Uses Vite 6 for bundling and dev proxying (/api and /ws) to the Cloudflare Worker backend.",
+  "_comment_scripts": {
+    "dev": "Starts the Vite development server with HMR and backend proxy rules.",
+    "build": "Runs strict TypeScript typechecking (tsc --noEmit) before creating the production bundle in dist/."
+  },
+  "_comment_dependencies": {
+    "hono": "Provides typed RPC client utilities (hono/client) matching the server's AppType export.",
+    "pixi.js": "Renders the 2D overworld map, buildings, walls, and interpolated player sprites on HTML5 Canvas.",
+    "react": "Core UI library for authentication, matchmaking status, HUD controls, and BattleModal.",
+    "react-dom": "DOM renderer for mounting React components into #root."
+  }
+}

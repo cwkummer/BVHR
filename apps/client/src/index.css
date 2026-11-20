@@ -1,0 +1,6 @@
+/*
+ * Global stylesheet for the BHVR Edge RPG client.
+ * Imports Tailwind CSS v4 so utility classes across App.tsx, BattleModal.tsx, and
+ * GameCanvas.tsx are compiled into the client bundle.
+ */
+@import "tailwindcss";

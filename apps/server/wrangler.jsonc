@@ -1,0 +1,75 @@
+{
+  // JSON schema reference for IDE validation of Wrangler configuration fields.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Default Worker name deployed to Cloudflare Workers.
+  "name": "bhvr-rpg-game",
+  // Main Worker fetch and scheduled/DO export entry point.
+  "main": "src/index.ts",
+  // Workers runtime compatibility date.
+  "compatibility_date": "2026-01-01",
+  // Treat .sql migration files as text modules so Drizzle can bundle and apply them at startup.
+  "rules": [
+    { "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }
+  ],
+  // Enable Workers observability logs and metrics.
+  "observability": {
+    "enabled": true
+  },
+  // Serve the built SPA static assets from apps/client/dist while routing /ws/* and /api/* to the Worker.
+  "assets": {
+    "directory": "../client/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/ws/*", "/api/*"]
+  },
+  // Global D1 database binding for persistent user profiles and idempotent reward claim records.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "rpg-global-db-dev",
+      "database_id": "REPLACE_WITH_DEV_D1_ID",
+      "migrations_dir": "drizzle-d1/migrations"
+    }
+  ],
+  // Durable Object namespace binding for stateful regional overworld shard rooms (GameRoom).
+  "durable_objects": {
+    "bindings": [
+      { "name": "GAME_ROOM", "class_name": "GameRoom" }
+    ]
+  },
+  // SQLite-backed Durable Object migration tag for GameRoom.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["GameRoom"] }
+  ],
+  // Production environment override with separate Worker name and production D1 database.
+  "env": {
+    "prod": {
+      "name": "bhvr-rpg-game-prod",
+      "rules": [
+        { "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }
+      ],
+      "observability": {
+        "enabled": true
+      },
+      "assets": {
+        "directory": "../client/dist",
+        "binding": "ASSETS",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": ["/ws/*", "/api/*"]
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "rpg-global-db-prod",
+          "database_id": "REPLACE_WITH_PROD_D1_ID",
+          "migrations_dir": "drizzle-d1/migrations"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "GAME_ROOM", "class_name": "GameRoom" }
+        ]
+      }
+    }
+  }
+}

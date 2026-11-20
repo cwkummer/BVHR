@@ -1,0 +1,20 @@
+<!doctype html>
+<!--
+  Root HTML shell for the BHVR Edge RPG client application.
+  Vite injects the module entry script (/src/main.tsx) and bundled stylesheets during
+  development and production builds. The #root element serves as the React mount point.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Ensure responsive scaling and proper viewport sizing across desktop and mobile viewports -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BHVR Edge RPG</title>
+  </head>
+  <body>
+    <!-- Application mount container for the React root component -->
+    <div id="root"></div>
+    <!-- Client TypeScript entry point loaded as an ES module -->
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
