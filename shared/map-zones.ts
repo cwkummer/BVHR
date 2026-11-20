@@ -18,6 +18,14 @@ export const BUILDINGS: Rect[] = [
   { id: "bank", name: "Central Bank", x: 760, y: 420, w: 240, h: 180 }
 ];
 
+/**
+ * Returns the id of the building zone containing `(x, y)` (edges inclusive), or null when outside all zones.
+ */
+export function findZoneId(x: number, y: number): string | null {
+  const zone = BUILDINGS.find((b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+  return zone ? zone.id : null;
+}
+
 // Impassable obstacle rectangles that push player circles out along their closest contact normal.
 export const WALLS: Rect[] = [
   { id: "rock_1", x: 520, y: 260, w: 80, h: 80 },
