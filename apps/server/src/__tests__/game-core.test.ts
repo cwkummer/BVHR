@@ -2,6 +2,7 @@
  * Unit tests covering core shared physics, combat formulas, timeout forfeiture rules,
  * JWT scope isolation between session tokens and WebSocket tickets, and JWKS cache TTL clamping.
  */
+import { pickEncounterPairs, type EncounterCandidate } from "../encounters";
 import { describe, expect, test } from "bun:test";
 import { stepMovement, MAP_WIDTH, MAP_HEIGHT, PLAYER_RADIUS, WALLS } from "../../../../shared/map-zones";
 import {
@@ -75,5 +76,52 @@ describe("JWT scope isolation and JWKS cache parsing", () => {
     expect(parseCacheMaxAgeMs("public, max-age=1800")).toBe(1_800_000);
     expect(parseCacheMaxAgeMs("public, max-age=10")).toBe(300_000);
     expect(parseCacheMaxAgeMs("public, max-age=999999")).toBe(21_600_000);
+  });
+});
+
+describe("encounter matching", () => {
+  const mk = (id: string, over: Partial<EncounterCandidate> = {}): EncounterCandidate => ({
+    id,
+    currentZoneId: "tavern",
+    battleId: null,
+    battleCooldownUntil: 0,
+    zoneArmed: false,
+    ...over
+  });
+
+  test("armed entrant fights an idle player and takes the first turn", () => {
+    const [pair] = pickEncounterPairs([mk("idle"), mk("entrant", { zoneArmed: true })], 1000);
+    expect(pair.first.id).toBe("entrant");
+    expect(pair.second.id).toBe("idle");
+  });
+
+  test("two disarmed players standing together do not rematch", () => {
+    expect(pickEncounterPairs([mk("a"), mk("b")], 1000)).toHaveLength(0);
+  });
+
+  test("armed player waits out immunity, then fights once it expires", () => {
+    const players = [mk("a", { zoneArmed: true, battleCooldownUntil: 2000 }), mk("b")];
+    expect(pickEncounterPairs(players, 1999)).toHaveLength(0);
+    expect(pickEncounterPairs(players, 2000)).toHaveLength(1);
+  });
+
+  test("ignores players in battle or in different zones", () => {
+    const players = [
+      mk("a", { zoneArmed: true }),
+      mk("b", { battleId: "x" }),
+      mk("c", { currentZoneId: "bank" }),
+      mk("d", { currentZoneId: null })
+    ];
+    expect(pickEncounterPairs(players, 1000)).toHaveLength(0);
+  });
+
+  test("pairs are disjoint when a zone has several players", () => {
+    const pairs = pickEncounterPairs(
+      [mk("a", { zoneArmed: true }), mk("b"), mk("c", { zoneArmed: true }), mk("d")],
+      1000
+    );
+    const ids = pairs.flatMap((p) => [p.first.id, p.second.id]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(pairs).toHaveLength(2);
   });
 });

@@ -11,7 +11,7 @@
  *  - Per-battle promises (`battleLocks`) serialize player actions and timeout resolutions so turns
  *    never race or double-apply.
  *  - Battle rewards are recorded in DO `pending_rewards` and idempotently credited to D1 via
- *    `reward_claims` + `users`, retrying with exponential backoff via `alarm()` on failure.
+ *    `reward_claims` + `users`, retrying with exponential backoff via `alarm()` on failure (never dropped).
  */
 import { DurableObject } from "cloudflare:workers";
 import { drizzle, DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
@@ -31,6 +31,7 @@ import {
   computeHealedHp,
   shouldForfeitOnTimeout
 } from "./combat";
+import { pickEncounterPairs } from "./encounters";
 import { and, eq, lte, min } from "drizzle-orm";
 
 /**
@@ -43,7 +44,8 @@ type LivePlayer = PlayerRow & {
   dirty: boolean;
   msgTokens: number;
   lastTokenRefill: number;
-  battleCooldownUntil: number;
+  /** True after entering a zone until a battle ends; see `pickEncounterPairs`. */
+  zoneArmed: boolean;
 };
 
 const MAX_MSGS_PER_SEC = 30;
@@ -130,24 +132,10 @@ export class GameRoom extends DurableObject<Env> {
             dirty: false,
             msgTokens: MAX_MSGS_PER_SEC,
             lastTokenRefill: now,
-            battleCooldownUntil: 0
+            zoneArmed: false
           });
         }
       });
-
-      // Restore unexpired post-battle immunity cooldowns and clean up expired entries.
-      const persistedCooldowns = await this.ctx.storage.list<number>({ prefix: "cooldown:" });
-      for (const [key, cooldownUntil] of persistedCooldowns.entries()) {
-        const pid = key.slice("cooldown:".length);
-        if (typeof cooldownUntil === "number" && cooldownUntil > now) {
-          const live = this.state.get(pid);
-          if (live) {
-            live.battleCooldownUntil = cooldownUntil;
-          }
-        } else {
-          await this.ctx.storage.delete(key);
-        }
-      }
 
       await this.syncNextAlarm();
     });
@@ -295,7 +283,8 @@ export class GameRoom extends DurableObject<Env> {
       attack: profile.attack,
       defense: profile.defense,
       currentZoneId: null,
-      battleId: null
+      battleId: null,
+      battleCooldownUntil: 0
     };
     this.db.insert(players).values(row).run();
     player = {
@@ -305,7 +294,7 @@ export class GameRoom extends DurableObject<Env> {
       dirty: false,
       msgTokens: MAX_MSGS_PER_SEC,
       lastTokenRefill: Date.now(),
-      battleCooldownUntil: 0
+      zoneArmed: false
     };
     this.state.set(profile.id, player);
     return { player, isNewJoin };
@@ -465,7 +454,6 @@ export class GameRoom extends DurableObject<Env> {
     this.lastTickAt = now;
 
     let anyoneMoving = false;
-    let needsAlarmSync = false;
     const movedPlayers: Array<{ id: string; x: number; y: number; currentZoneId: string | null }> = [];
 
     for (const p of this.state.values()) {
@@ -484,27 +472,12 @@ export class GameRoom extends DurableObject<Env> {
       if (p.currentZoneId !== newZoneId) {
         p.currentZoneId = newZoneId;
 
-        // Entering a building starts an encounter if another eligible player is in the same zone.
-        if (newZoneId && now >= p.battleCooldownUntil) {
-          const enemy = Array.from(this.state.values()).find(
-            (other) =>
-              other.id !== p.id &&
-              other.currentZoneId === newZoneId &&
-              !other.battleId &&
-              now >= other.battleCooldownUntil
-          );
-          if (enemy) {
-            p.dx = 0;
-            p.dy = 0;
-            enemy.dx = 0;
-            enemy.dy = 0;
-            this.startEncounterSync(p, enemy, newZoneId);
-            needsAlarmSync = true;
-          }
-        }
+        // Entering a building arms this player to trigger an encounter; matching runs after the loop.
+        p.zoneArmed = newZoneId !== null;
       }
     }
 
+    const needsAlarmSync = this.startDueEncounters(now);
     if (needsAlarmSync) {
       await this.syncNextAlarm();
     }
@@ -571,6 +544,21 @@ export class GameRoom extends DurableObject<Env> {
         p.dirty = false;
       }
     });
+  }
+
+  /**
+   * Starts every currently due zone encounter (see `pickEncounterPairs`) and returns whether any began.
+   */
+  private startDueEncounters(now: number): boolean {
+    const pairs = pickEncounterPairs(this.state.values(), now);
+    for (const { zoneId, first, second } of pairs) {
+      first.dx = 0;
+      first.dy = 0;
+      second.dx = 0;
+      second.dy = 0;
+      this.startEncounterSync(first, second, zoneId);
+    }
+    return pairs.length > 0;
   }
 
   /**
@@ -660,9 +648,14 @@ export class GameRoom extends DurableObject<Env> {
       actor.battleId = null;
       actor.hp = actor.maxHp;
       actor.battleCooldownUntil = Date.now() + POST_BATTLE_IMMUNITY_MS;
+      actor.zoneArmed = false;
       this.ctx.storage.transactionSync(() => {
         this.db.delete(battles).where(eq(battles.id, battle.id)).run();
-        this.db.update(players).set({ battleId: null, hp: actor.maxHp }).where(eq(players.id, actor.id)).run();
+        this.db
+          .update(players)
+          .set({ battleId: null, hp: actor.maxHp, battleCooldownUntil: actor.battleCooldownUntil })
+          .where(eq(players.id, actor.id))
+          .run();
         this.db.delete(players).where(eq(players.id, opponentId)).run();
       });
       try {
@@ -707,14 +700,21 @@ export class GameRoom extends DurableObject<Env> {
       opponent.battleId = null;
       actor.hp = actor.maxHp;
       opponent.hp = opponent.maxHp;
-      this.setBattleCooldown(actor.id, cooldownUntil);
-      this.setBattleCooldown(opponent.id, cooldownUntil);
+      for (const p of [actor, opponent]) {
+        p.battleCooldownUntil = cooldownUntil;
+        p.zoneArmed = false;
+      }
 
-      // Atomically remove the battle, reset player battle/HP state, and enqueue the reward in DO SQLite.
+      // Atomically remove the battle, reset player battle/HP/immunity state, and enqueue the reward in DO SQLite.
       this.ctx.storage.transactionSync(() => {
         this.db.delete(battles).where(eq(battles.id, battle.id)).run();
-        this.db.update(players).set({ battleId: null, hp: actor.maxHp }).where(eq(players.id, actor.id)).run();
-        this.db.update(players).set({ battleId: null, hp: opponent.maxHp }).where(eq(players.id, opponent.id)).run();
+        for (const p of [actor, opponent]) {
+          this.db
+            .update(players)
+            .set({ battleId: null, hp: p.maxHp, battleCooldownUntil: cooldownUntil })
+            .where(eq(players.id, p.id))
+            .run();
+        }
         this.db
           .insert(pendingRewards)
           .values({
@@ -728,12 +728,10 @@ export class GameRoom extends DurableObject<Env> {
           .run();
       });
 
+      // Tell players the battle is over before touching D1 so a slow D1 call never delays the result.
       try {
-        await this.applyBattleRewardToD1(rewardId, winnerId, BATTLE_REWARD_XP, BATTLE_REWARD_GOLD);
-      } catch (err) {
-        console.error("Failed to award D1 battle rewards; retained in outbox for retry:", err);
-      } finally {
         await this.syncNextAlarm();
+      } finally {
         this.sendToPlayers([actor.id, opponent.id], {
           type: "BATTLE_ENDED",
           winnerId,
@@ -742,6 +740,13 @@ export class GameRoom extends DurableObject<Env> {
         });
         this.pruneDisconnectedPlayers([actor.id, opponent.id]);
       }
+
+      try {
+        await this.applyBattleRewardToD1(rewardId, winnerId, BATTLE_REWARD_XP, BATTLE_REWARD_GOLD);
+      } catch (err) {
+        console.error("Failed to award D1 battle rewards; retained in outbox for retry:", err);
+      }
+      await this.syncNextAlarm().catch((err) => console.error("Failed to resync alarm:", err));
       return;
     }
 
@@ -862,17 +867,6 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   /**
-   * Sets in-memory and durable storage post-battle immunity timestamp for `playerId`.
-   */
-  private setBattleCooldown(playerId: string, cooldownUntil: number): void {
-    const live = this.state.get(playerId);
-    if (live) {
-      live.battleCooldownUntil = cooldownUntil;
-    }
-    void this.ctx.storage.put(`cooldown:${playerId}`, cooldownUntil);
-  }
-
-  /**
    * Schedules or clears the Durable Object alarm for the earliest active battle turn deadline
    * or due `pending_rewards` retry timestamp, avoiding redundant storage calls when unchanged.
    */
@@ -888,7 +882,16 @@ export class GameRoom extends DurableObject<Env> {
       .from(pendingRewards)
       .get();
 
-    const candidates = [battleRow?.nextDeadline, rewardRow?.nextRetry].filter(
+    // Wake when a standing player's post-battle immunity expires so a waiting encounter can start.
+    const nowTs = Date.now();
+    let nextCooldown: number | undefined;
+    for (const p of this.state.values()) {
+      if (p.currentZoneId && !p.battleId && p.battleCooldownUntil > nowTs) {
+        nextCooldown = nextCooldown === undefined ? p.battleCooldownUntil : Math.min(nextCooldown, p.battleCooldownUntil);
+      }
+    }
+
+    const candidates = [battleRow?.nextDeadline, rewardRow?.nextRetry, nextCooldown].filter(
       (ts): ts is number => ts != null
     );
 
@@ -918,23 +921,17 @@ export class GameRoom extends DurableObject<Env> {
     this.inFlightRewardIds.add(rewardId);
 
     try {
+      // `INSERT OR IGNORE` makes a repeated claim a no-op, and the credit only applies when that insert
+      // actually added a row (`changes()` is 1), so the pair is idempotent without parsing error text.
       const insertClaim = this.env.DB.prepare(
-        "INSERT INTO reward_claims (id, user_id, xp, gold, created_at) VALUES (?, ?, ?, ?, ?)"
+        "INSERT OR IGNORE INTO reward_claims (id, user_id, xp, gold, created_at) VALUES (?, ?, ?, ?, ?)"
       ).bind(rewardId, userId, xp, gold, Date.now());
 
       const creditUser = this.env.DB.prepare(
-        "UPDATE users SET xp = xp + ?, gold = gold + ? WHERE id = ?"
+        "UPDATE users SET xp = xp + ?, gold = gold + ? WHERE id = ? AND (SELECT changes()) > 0"
       ).bind(xp, gold, userId);
 
-      try {
-        await this.env.DB.batch([insertClaim, creditUser]);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // A unique constraint error on reward_claims indicates this reward was already applied.
-        if (!msg.includes("UNIQUE constraint failed")) {
-          throw err;
-        }
-      }
+      await this.env.DB.batch([insertClaim, creditUser]);
 
       this.db.delete(pendingRewards).where(eq(pendingRewards.id, rewardId)).run();
     } finally {
@@ -958,19 +955,18 @@ export class GameRoom extends DurableObject<Env> {
       try {
         await this.applyBattleRewardToD1(reward.id, reward.userId, reward.xp, reward.gold);
       } catch (err) {
+        // Never drop a reward: keep retrying at the capped backoff and surface persistent failures in logs.
         const nextAttempts = reward.attempts + 1;
+        const backoffMs = Math.min(MAX_REWARD_RETRY_MS, INITIAL_REWARD_RETRY_MS * 2 ** Math.min(nextAttempts, 16));
+        this.db
+          .update(pendingRewards)
+          .set({ attempts: nextAttempts, nextRetryAt: now + backoffMs })
+          .where(eq(pendingRewards.id, reward.id))
+          .run();
         if (nextAttempts >= MAX_REWARD_ATTEMPTS) {
-          console.error("Dropping permanently failed D1 reward after max attempts:", reward, err);
-          this.db.delete(pendingRewards).where(eq(pendingRewards.id, reward.id)).run();
-        } else {
-          const backoffMs = Math.min(MAX_REWARD_RETRY_MS, INITIAL_REWARD_RETRY_MS * 2 ** nextAttempts);
-          this.db
-            .update(pendingRewards)
-            .set({ attempts: nextAttempts, nextRetryAt: now + backoffMs })
-            .where(eq(pendingRewards.id, reward.id))
-            .run();
-          console.error("Retry D1 reward update failed:", err);
+          console.error(`D1 reward ${reward.id} still failing after ${nextAttempts} attempts; will keep retrying:`, reward);
         }
+        console.error("Retry D1 reward update failed:", err);
       }
     }
   }
@@ -1025,8 +1021,13 @@ export class GameRoom extends DurableObject<Env> {
                 if (p) {
                   p.battleId = null;
                   p.hp = p.maxHp;
-                  this.setBattleCooldown(pid, cooldownUntil);
-                  this.db.update(players).set({ battleId: null, hp: p.maxHp }).where(eq(players.id, pid)).run();
+                  p.battleCooldownUntil = cooldownUntil;
+                  p.zoneArmed = false;
+                  this.db
+                    .update(players)
+                    .set({ battleId: null, hp: p.maxHp, battleCooldownUntil: cooldownUntil })
+                    .where(eq(players.id, pid))
+                    .run();
                 }
               }
             });
@@ -1043,6 +1044,7 @@ export class GameRoom extends DurableObject<Env> {
 
     await this.flushPendingRewards(Date.now());
     this.pruneDisconnectedPlayers(Array.from(participantIds));
+    this.startDueEncounters(Date.now());
     await this.syncNextAlarm();
   }
 

@@ -8,6 +8,13 @@
       "when": 1795203488932,
       "tag": "0000_shiny_norrin_radd",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1795204023188,
+      "tag": "0001_hard_betty_ross",
+      "breakpoints": true
     }
   ]
 }

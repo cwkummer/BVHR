@@ -17,7 +17,9 @@ export const players = sqliteTable("players", {
   attack: integer("attack").notNull().default(15),
   defense: integer("defense").notNull().default(6),
   currentZoneId: text("current_zone_id"),
-  battleId: text("battle_id")
+  battleId: text("battle_id"),
+  // Post-battle encounter immunity deadline (epoch ms), persisted atomically with battle settlement.
+  battleCooldownUntil: integer("battle_cooldown_until").notNull().default(0)
 });
 
 export const battles = sqliteTable(

@@ -1,0 +1,1 @@
+ALTER TABLE `players` ADD `battle_cooldown_until` integer DEFAULT 0 NOT NULL;
